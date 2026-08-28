@@ -12,6 +12,13 @@ production:
   qc_profile: lenient_v1
   auto_prune: false
 
+qc:
+  duration_tolerance_seconds: 0.25
+  dimension_tolerance_pixels: 0
+  max_targeted_repairs_per_task: 2
+  require_audio_when_planned: true
+  require_cta: true
+
 providers:
   subscription_first: true
   api_fallback_enabled: false
