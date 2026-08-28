@@ -1,0 +1,11 @@
+{
+  "product_id": "warranty-vault",
+  "name": "Warranty Vault v1 acceptance",
+  "brief_source": "docs/10-acceptance/WARRANTY_VAULT_ACCEPTANCE.md",
+  "brief": "Create a polished 20-second vertical advertisement for Warranty Vault aimed at homeowners. Show the frustration of needing a warranty receipt when an appliance fails, then demonstrate how Warranty Vault helps organize warranty information. Use authentic app footage for product proof and produce a finished social-media advertisement.",
+  "aspect_ratio": "9:16",
+  "duration_seconds": 20,
+  "start_requires_product_truth": "READY",
+  "status": "BLOCKED_PENDING_AUTHORITATIVE_HANDOFF",
+  "claim_policy": "Treat every phrase in the locked brief as a requested concept, not an approved product claim, until mapped to CURRENT evidence. Omit any unsupported wording."
+}

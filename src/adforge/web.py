@@ -11,7 +11,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from adforge.auth import SessionSigner, verify_password
-from adforge.models import Campaign, CampaignState, TaskState
+from adforge.bootstrap import ensure_warranty_vault_product
+from adforge.models import Campaign, CampaignState, TaskState, TruthReadiness
 from adforge.orchestrator import ActiveCampaignError, Orchestrator, TransitionError
 from adforge.services import Services
 from adforge.storage import UnsafePathError
@@ -54,6 +55,7 @@ def create_app(
     imports.mkdir(parents=True, exist_ok=True, mode=0o700)
     services = Services(root, schemas)
     services.initialize()
+    ensure_warranty_vault_product(services)
     configured_secret = (
         secret_key if secret_key is not None else os.getenv("ADFORGE_SECRET_KEY", "")
     )
@@ -213,6 +215,15 @@ def create_app(
         campaign_id: str, session: Session, csrf: Annotated[str, Form()]
     ) -> RedirectResponse:
         require_csrf(session, csrf)
+        campaign = context.services.campaigns.get(campaign_id)
+        if campaign is None:
+            raise HTTPException(status_code=404)
+        product = context.services.products.get(campaign.product_id)
+        if product is None or product.truth_readiness != TruthReadiness.READY:
+            raise HTTPException(
+                status_code=409,
+                detail="campaign cannot start until Product Truth is READY",
+            )
         try:
             context.orchestrator.transition(
                 campaign_id, CampaignState.PRODUCT_TRUTH_VALIDATION

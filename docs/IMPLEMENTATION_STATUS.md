@@ -4,9 +4,9 @@ Last updated: 2026-08-28 UTC.
 
 ## Current phase
 
-Phase 12 is complete. Startup recovery, metadata/filesystem backup/restore, non-pruning
-storage pressure, restrictive profile permissions, log redaction, bounded processes,
-and validated Caddy/systemd deployment artifacts are implemented and documented.
+Phase 13 is independently complete. Warranty Vault is seeded in UNKNOWN state with
+empty truth/APK/brand/reference locations, a gated acceptance template, precise
+handoff request/readiness report, and a tested web guard preventing premature start.
 
 ## Phase ledger
 
@@ -25,7 +25,7 @@ and validated Caddy/systemd deployment artifacts are implemented and documented.
 | 10 — Edit spec/FFmpeg renderer | Complete | Real MP4/ffprobe, profile, text, audio, invalid spec and injection tests |
 | 11 — QC and targeted repair | Complete | Broken media, claim, missing asset, advisory, targeted repair and budget tests |
 | 12 — Recovery/operations/security | Complete | Restart, backup, storage, redaction, permissions and deployment validation tests |
-| 13 | Not started | Warranty Vault readiness pending |
+| 13 — Warranty Vault readiness | Complete except real handoff | Claim-free seed, paths, request/report, and READY start-gate tests |
 | 14 — End-to-end acceptance | Blocked externally | Warranty Vault truth/APK/assets, emulator, Flow, and FFmpeg evidence unavailable |
 | 15 — Release audit | Not started | Pending implementation |
 
