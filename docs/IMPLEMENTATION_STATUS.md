@@ -4,9 +4,9 @@ Last updated: 2026-08-28 UTC.
 
 ## Current phase
 
-Phase 9 is complete. Replaceable voice/music contracts, explicit voice-clone
-authorization, original local test fallbacks for voice/music/SFX, timing/provenance,
-WAV validation, loudness/peak analysis, ducking, and non-clipping mixing are present.
+Phase 10 is complete. The typed edit spec and FFmpeg renderer support normalized
+clips/trims/layout, fades, deterministic text/captions/CTA, logo overlays, mixed
+audio with ducking/limiting, all required profiles, and ffprobe-validated MP4 output.
 
 ## Phase ledger
 
@@ -22,7 +22,8 @@ WAV validation, loudness/peak analysis, ducking, and non-clipping mixing are pre
 | 7 — Flow/video generation + handoff | Complete except live external smoke | Adapter and fixture handoff round-trip tests; Chromium/login blocker recorded |
 | 8 — Android/APK/emulator + handoff | Complete except live external smoke | APK, parser, safety, fictional data, manifest and fixture round-trip tests |
 | 9 — Audio production | Complete | Clone authorization, validation, timing, provenance, mix/peak tests |
-| 10–13 | Not started | Implementation pending |
+| 10 — Edit spec/FFmpeg renderer | Complete | Real MP4/ffprobe, profile, text, audio, invalid spec and injection tests |
+| 11–13 | Not started | Implementation pending |
 | 14 — End-to-end acceptance | Blocked externally | Warranty Vault truth/APK/assets, emulator, Flow, and FFmpeg evidence unavailable |
 | 15 — Release audit | Not started | Pending implementation |
 
