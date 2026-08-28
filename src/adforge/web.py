@@ -109,7 +109,9 @@ def create_app(
     package_root = Path(__file__).parent
     root = (runtime_root or Path(os.getenv("ADFORGE_DATA_ROOT", ".adforge-runtime"))).resolve()
     schemas = (schema_root or Path("schemas")).resolve()
-    imports = (import_root or root / "imports").resolve()
+    imports = (
+        import_root or Path(os.getenv("ADFORGE_IMPORT_ROOT", str(root / "imports")))
+    ).resolve()
     imports.mkdir(parents=True, exist_ok=True, mode=0o700)
     services = Services(root, schemas)
     services.initialize()
