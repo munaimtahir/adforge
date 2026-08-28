@@ -22,3 +22,26 @@ The build prompt is intentionally multi-phase but is one continuous autonomous s
 ## v1 production path
 
 Brief → Product Truth → Strategy → Script → Storyboard → Asset Plan → AI Media → Android Capture → Audio → Edit Plan → Draft → QC → Repair → Final Render → Export
+
+## Implemented application
+
+AdForge is an installable Python 3.12/FastAPI application with SQLite persistence,
+server-rendered desktop UI, durable stage worker, Product Truth enforcement,
+Claude/Codex subscription CLI adapters, Flow and emulator handoffs, audio production,
+FFmpeg rendering, QC/repair, backups, and deployment artifacts.
+
+Development startup:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+export ADFORGE_DATA_ROOT="$PWD/.adforge-runtime"
+export ADFORGE_SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+.venv/bin/python -m adforge.auth
+# Put the emitted hash in ADFORGE_ADMIN_PASSWORD_HASH, then:
+.venv/bin/uvicorn adforge.web:create_app --factory --host 127.0.0.1 --port 8080
+```
+
+Production deployment is documented in `docs/09-operations/DEPLOYMENT.md`. Warranty
+Vault acceptance is intentionally blocked until the authoritative handoff in
+`docs/10-acceptance/WARRANTY_VAULT_HANDOFF_REQUEST.md` is supplied and validated.
