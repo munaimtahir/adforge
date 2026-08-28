@@ -13,7 +13,7 @@ implementation and handoff contract work continues.
 | B-004 | RESOLVED 2026-08-29 — a real external worker (`adforge-linux-01`) connected, registered, and completed real jobs (see below) | — | Real external worker acceptance |
 | B-005 | RESOLVED 2026-08-29 — real `android_capture` exercised end to end through a connected worker (see below) | — | Real Android capture acceptance via worker |
 | B-006 | Real Flow generation has not been exercised through a distributed worker | With B-003 resolved, run a `flow_generation` job through a connected worker end to end (generate, download, upload) | Real Flow generation acceptance via worker |
-| B-007 | PARTIALLY RESOLVED 2026-08-29 — installation/PATH fixed for both CLIs on the `adforge` service account; only interactive authentication remains (see below) | Run `claude login` / `codex login` (or provide subscription/API-key credentials) as the `adforge` user — the one remaining human action | Real Claude/Codex health on the production platform verdict |
+| B-007 | RESOLVED 2026-08-29 — both CLIs authenticated for real as the `adforge` service account; production platform verdict is now `PLATFORM_READY` (see below) | — | Real Claude/Codex health on the production platform verdict |
 
 ## Release impact
 
@@ -22,8 +22,8 @@ sign-in) remain open. Until they are resolved and the evidence in
 `docs/RELEASE_READINESS.md` is produced, the verdict remains **ADFORGE v1 — NOT
 READY** for the canonical Warranty Vault acceptance campaign specifically. There is no
 final Warranty Vault MP4 path. The **distributed worker subsystem itself** — the
-subject of B-004/B-005/B-002 — is now genuinely proven end to end against production,
-independent of the Warranty Vault gate.
+subject of B-004/B-005/B-002 — and **production Claude/Codex health (B-007)** are now
+genuinely proven end to end against production, independent of the Warranty Vault gate.
 
 ## Distributed worker status (2026-08-29)
 
@@ -116,7 +116,43 @@ cwd reads a different user's config and reports a spurious permission error).
   wasn't even resolvable) and the **overall platform verdict improved from
   `PLATFORM_NOT_READY` to `PLATFORM_DEGRADED`** — verified live against production.
 
-**The exact one remaining human action for B-007:** run, as the `adforge` service
-account on the production VM (`sudo -u adforge -H bash -lc 'cd /opt/adforge && claude
-login'` and the equivalent `codex login`), either the interactive subscription login
-or provide API keys for headless auth — whichever billing model is preferred.
+**B-007 RESOLVED 2026-08-29.** The `adforge` service account authenticated both CLIs
+for real via their subscription login flows (not API keys), matching the project's
+subscription-first architecture:
+
+- **Claude**: `claude auth login` (Claude subscription/`claudeai` OAuth flow, not
+  Console/API-key). Headless completion required injecting the browser-obtained
+  authorization code into the waiting CLI process's controlling pty via `TIOCSTI`
+  (a plain write to the pty slave only echoes to the display, it does not feed the
+  reading process's stdin — this distinction cost real debugging time). Verified:
+  `claude auth status` reports `loggedIn: true, authMethod: claude.ai, subscriptionType:
+  pro`; AdForge's own `check_claude()` real-invocation health check reports
+  **`READY` (2.9–4.7s)**.
+- **Codex**: `codex login --device-auth` (ChatGPT subscription device-code flow, not
+  `--with-api-key`). This surfaced a second real, separate bug: with no
+  `~/.codex/config.toml`, Codex CLI 0.117.0 defaults to model `gpt-5.3-codex`, which a
+  ChatGPT-subscription account cannot use (`400 invalid_request_error: 'gpt-5.3-codex'
+  model is not supported when using Codex with a ChatGPT account`) — authentication
+  itself was fine, but every real invocation still failed. Fixed by writing
+  `/opt/adforge/.codex/config.toml` with `model = "gpt-5.4"` (mode 0600). Verified:
+  `codex login status` reports `Logged in using ChatGPT`; a real `codex exec` call
+  using AdForge's exact production invocation shape (no `-c model=` override, relying
+  on the config default) returns the correct structured `{"status":"ok"}`; AdForge's
+  own `check_codex()` real-invocation health check reports **`READY` (35.8–37.6s)**.
+- **Full platform verdict, verified live against production**
+  (`collect_capabilities(force_slow=True)` / `platform_status()`): `database READY`,
+  `storage READY`, `ffmpeg READY`, `chromium READY`, `claude READY`, `codex READY` →
+  **`PLATFORM_READY`** — the first time this project has reached that verdict (previous
+  best was `PLATFORM_DEGRADED`, phase 18). `android_capture` and `flow_generation`
+  are correctly excluded from the platform-owned verdict (per the existing
+  `PLATFORM_OWNED_CAPABILITIES` design) and remain `TEMPORARILY_UNAVAILABLE` (no
+  worker online) and `BLOCKED` (B-003/B-006, Flow login not yet done) respectively —
+  worker-dependent capability availability, not platform readiness, exactly matching
+  the documented semantic distinction.
+- **Also fixed in passing:** `loginctl enable-linger adforge` was not set, so any
+  background process started as the `adforge` service account via `sudo -u adforge`
+  was killed the moment the invoking session's systemd scope ended, regardless of
+  `nohup`/`disown`/`setsid` — the process-level detachment tricks don't survive
+  cgroup-based session teardown. Enabled lingering and started `user@997.service`
+  explicitly; this is what let the long-running interactive login sessions (and will
+  let any future durable background job for this account) actually persist.
