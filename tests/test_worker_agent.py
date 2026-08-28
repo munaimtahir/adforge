@@ -64,6 +64,38 @@ def test_config_round_trips_with_restrictive_permissions(tmp_path: Path, monkeyp
     assert mode == 0o600
 
 
+def test_apply_canonical_display_config_forces_documented_resolution(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.ini"
+    config_path.write_text(
+        "hw.device.name=pixel_6\n"
+        "hw.lcd.width=1080\n"
+        "hw.lcd.height=2400\n"
+        "hw.initialOrientation=portrait\n"
+    )
+
+    worker_agent.apply_canonical_display_config(config_path)
+
+    written = dict(
+        line.split("=", 1) for line in config_path.read_text().splitlines() if "=" in line
+    )
+    assert written["hw.lcd.width"] == "1080"
+    assert written["hw.lcd.height"] == "1920"
+    assert written["hw.initialOrientation"] == "portrait"
+
+
+def test_apply_canonical_display_config_adds_missing_keys(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.ini"
+    config_path.write_text("hw.device.name=pixel_6\n")
+
+    worker_agent.apply_canonical_display_config(config_path)
+
+    written = dict(
+        line.split("=", 1) for line in config_path.read_text().splitlines() if "=" in line
+    )
+    assert written["hw.lcd.width"] == "1080"
+    assert written["hw.lcd.height"] == "1920"
+
+
 def test_package_and_serial_validation_reject_unsafe_values() -> None:
     worker_agent._validate_package("com.fixture.demo")
     try:

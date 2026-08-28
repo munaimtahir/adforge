@@ -227,7 +227,38 @@ def ensure_canonical_avd(sdk: dict[str, Any]) -> dict[str, Any]:
             }
     except (subprocess.TimeoutExpired, OSError) as exc:
         return {"status": "EXTERNAL_ACTION_REQUIRED", "detail": str(exc)[:500]}
+    apply_canonical_display_config(avd_config_path(CANONICAL_AVD_NAME))
     return {"status": "READY", "detail": "canonical AVD created"}
+
+
+def avd_config_path(avd_name: str) -> Path:
+    return Path.home() / ".android" / "avd" / f"{avd_name}.avd" / "config.ini"
+
+
+def apply_canonical_display_config(config_path: Path) -> None:
+    """Force the canonical AVD's resolution/orientation to match `CANONICAL_RESOLUTION`.
+
+    `avdmanager create avd --device pixel_6` pulls the device profile's native skin
+    resolution (1080x2400), not the documented canonical baseline -- this patches
+    `hw.lcd.width`/`hw.lcd.height` afterward so the emulator actually boots at the
+    resolution `device.json` (and every downstream capture) claims it did.
+    """
+    width, height = (int(part) for part in CANONICAL_RESOLUTION.split("x"))
+    lines = config_path.read_text().splitlines()
+    updates = {"hw.lcd.width": str(width), "hw.lcd.height": str(height)}
+    seen = set()
+    patched = []
+    for line in lines:
+        key = line.split("=", 1)[0] if "=" in line else None
+        if key in updates:
+            patched.append(f"{key}={updates[key]}")
+            seen.add(key)
+        else:
+            patched.append(line)
+    for key, value in updates.items():
+        if key not in seen:
+            patched.append(f"{key}={value}")
+    config_path.write_text("\n".join(patched) + "\n")
 
 
 class AndroidError(RuntimeError):
