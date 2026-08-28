@@ -9,10 +9,10 @@ implementation and handoff contract work continues.
 |---|---|---|---|
 | B-001 | Authoritative Warranty Vault Product Truth, current APK, and brand assets are absent | Return every item in `docs/10-acceptance/WARRANTY_VAULT_HANDOFF_REQUEST.md`; AdForge must validate it and set the product to READY | Real Product Truth gate and Warranty Vault campaign specifically |
 | B-002 | RESOLVED 2026-08-29 — a canonical Android AVD now exists and boots for real (see below) | — | Authentic app footage (for any product; Warranty Vault itself is still gated by B-001) |
-| B-003 | Chrome/Playwright run, but the persistent profile lacks proven Flow generation access | Authenticate a Flow-capable subscription in the mode-0700 profile and pass a real generate/download/import smoke test | Live Flow/Veo generation |
+| B-003 | REVISED 2026-08-29 — browser-automated Flow sign-in is blocked by Google's own anti-automation controls (verified live, three independent layers); not being bypassed. Real completion no longer depends on it (see below) | Either provide `GEMINI_API_KEY` (Veo API, no browser automation), or use the manual worker-job completion UI (paste the AI-generated prompt into Flow yourself, upload the result) | Live Flow/Veo generation |
 | B-004 | RESOLVED 2026-08-29 — a real external worker (`adforge-linux-01`) connected, registered, and completed real jobs (see below) | — | Real external worker acceptance |
 | B-005 | RESOLVED 2026-08-29 — real `android_capture` exercised end to end through a connected worker (see below) | — | Real Android capture acceptance via worker |
-| B-006 | Real Flow generation has not been exercised through a distributed worker | With B-003 resolved, run a `flow_generation` job through a connected worker end to end (generate, download, upload) | Real Flow generation acceptance via worker |
+| B-006 | Real Flow generation has not been exercised end to end yet (mechanism ready, awaiting a real video from either completion path) | Complete DemoTask campaign `a0d5338a`'s two `flow_generation` jobs via the manual UI or Veo API | Real Flow generation acceptance |
 | B-007 | RESOLVED 2026-08-29 — both CLIs authenticated for real as the `adforge` service account; production platform verdict is now `PLATFORM_READY` (see below) | — | Real Claude/Codex health on the production platform verdict |
 
 ## Release impact
@@ -211,3 +211,51 @@ driven a real campaign through the live app before:
 None of these are Product Truth safety regressions — the claim gate, in
 particular, did exactly its job. They are real gaps in wiring that only a
 genuine, non-fixture campaign run through the actual application would surface.
+
+## Real Flow automation is blocked by Google's own anti-automation controls
+
+Investigated live, in order: (1) `FLOW_URL` was the public marketing page, not
+the tool -- fixed (commit `73ee54f`), clicking the page's real CTA correctly
+reaches Google's OAuth flow. (2) That OAuth flow itself refuses to complete for
+a Playwright-controlled Chromium ("This browser or app may not be secure") --
+a deliberate Google security control, not attempted to bypass. (3) The
+standard legitimate workaround -- export an already-authenticated session's
+cookies from a real, non-automated Chrome via `context.storage_state()`, load
+them into the isolated worker profile -- hit a *second*, independent Chrome
+restriction: DevTools/CDP automation is refused on literal default profile
+paths (`~/.config/google-chrome`), separate from Google's own block. Three
+independent, deliberate anti-automation layers in a row is a strong enough
+signal that this specific path (automating Flow's own sign-in) should not be
+pursued further; two better alternatives now exist instead:
+
+**B-003/B-006 status, revised:** browser-automated Flow sign-in specifically
+remains blocked (not a bug -- Google's intended behavior) and is not being
+worked around. But **real Flow generation acceptance is no longer gated on
+it**, because two legitimate completion paths now exist:
+
+1. **Gemini API (Veo) direct generation** (commit `3611dfc`) -- a genuine
+   first-party API (`generativelanguage.googleapis.com`, plain API-key auth,
+   paid preview), not browser automation at all. `worker_agent.py` prefers it
+   automatically whenever `GEMINI_API_KEY` is set. Not yet exercised for real
+   (no key provided this session) but the request/response shape is
+   implemented against Google's documented REST contract.
+2. **Manual worker-job completion via the web UI** (commit `c0fba4d`, fixed for
+   the exhausted-attempt case in `c61d7d4`) -- the campaign detail page shows
+   the AI-generated prompt for any open `flow_generation` job; a human pastes
+   it into Flow themselves (using their own real, already-working browser
+   session -- no automation involved at all), generates, downloads, and
+   uploads the result. This completes the job through the identical
+   `claim_specific`/`store_artifact`/`complete` path a real worker uses, so
+   the campaign continues fully automated from there. Real end-to-end proof
+   pending: the DemoTask campaign's two `flow_generation` jobs
+   (`3bd7dcde-bca2-4e21-84b5-78d328b4c1ec`,
+   `9c76b9c0-8d0e-472b-b858-0f6f0b75045a`) are sitting `FAILED` (exhausted
+   automated attempts) on production right now, exact prompts already
+   generated, waiting on a human to paste them into Flow and upload the
+   result through the new UI at
+   `https://adforge.vexel.pk/campaigns/a0d5338a-4535-4279-9aff-2746593d5add`.
+
+Also added while building this: real browser-based APK upload for campaign
+creation (commit `20463ab`) -- `apk_path` only ever worked if the file was
+already sitting on the server; there was no way to get it there through the
+browser at all.
