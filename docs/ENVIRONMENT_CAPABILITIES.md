@@ -8,8 +8,8 @@ identity, tokens, cookies, or browser-profile content.
 |---|---:|---|
 | Linux VM / Python 3.12 / Git | Yes | Core development supported |
 | Node.js 25 / npm 11 | Yes | Optional frontend tooling supported |
-| Codex CLI 0.150.1 | Yes, authenticated | Live health/smoke testing is possible with bounded prompts |
-| Claude Code 2.1.248 | Yes, authenticated | Live health/smoke testing is possible with bounded prompts |
+| Codex CLI 0.150.1 | Yes, authenticated | Real structured adapter smoke passed in 8.125s |
+| Claude Code 2.1.248 | Yes, authenticated | Real structured adapter smoke passed in 5.619s |
 | Android SDK, ADB, emulator binary | Yes | Adapter commands can be exercised |
 | Android virtual device | No configured AVD | Real emulator capture is externally blocked |
 | Connected ADB device | None | Real device capture is unavailable |
@@ -31,3 +31,11 @@ Production uses the `/opt/adforge` contract. Development uses the ignored
 Provider, browser, emulator, and render health are capabilities rather than startup
 requirements. Their absence must produce actionable health results and durable
 `BLOCKED` or `WAITING_FOR_EXTERNAL_ASSET` state while handoff paths remain usable.
+
+## Live provider evidence
+
+On 2026-08-28 UTC, the production `ClaudeCodeProvider` and `CodexCLIProvider`
+executed the same bounded, no-tool request against their authenticated subscription
+CLIs. Both returned `{"status":"ok"}` conforming to the supplied JSON Schema. This
+proves CLI invocation, authentication, structured output, and adapter parsing; it
+does not claim that unrelated creative tasks or external media providers were tested.

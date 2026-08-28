@@ -12,5 +12,4 @@ implementation and handoff contract work continues.
 | B-003 | Chromium is not installed and Flow login state is unavailable | Install supported Chromium/Playwright runtime and authenticate a persistent profile without committing it | Live Flow/Veo generation |
 | B-004 | FFmpeg and ffprobe are not installed | Install both binaries and pass deterministic render plus ffprobe gates | Draft/final render acceptance |
 
-Claude Code and Codex CLI binaries are present and authenticated; live adapter smoke
-tests still must be executed after their bounded adapters exist.
+Claude Code and Codex CLI live structured adapter smoke tests passed on 2026-08-28.

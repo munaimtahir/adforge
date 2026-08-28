@@ -4,9 +4,9 @@ Last updated: 2026-08-28 UTC.
 
 ## Current phase
 
-Phase 4 is complete. The desktop-first FastAPI control plane provides authenticated,
-CSRF-protected dashboard, product, campaign, queue, detail/timeline, asset, ledger,
-output/download, and provider-health views with safe input-path handling.
+Phase 5 is complete. Replaceable Claude Code and Codex CLI adapters use subscription
+CLIs, fixed argv/stdin prompts, structured JSON schemas, timeouts, secret filtering,
+capability/health routing, three attempts, and provider execution ledger records.
 
 ## Phase ledger
 
@@ -17,7 +17,8 @@ output/download, and provider-health views with safe input-path handling.
 | 2 — Product Truth | Complete | Import, schema/evidence, immutable snapshot, claim and provenance tests |
 | 3 — State machine/orchestrator | Complete | Transition, retry, restart, lease, idempotency and repair tests |
 | 4 — Desktop web control plane | Complete | Route, auth, CSRF, campaign, lease UX, path and secret tests |
-| 5–13 | Not started | Implementation pending |
+| 5 — Claude/Codex providers | Complete | Contract, router, retry, schema, injection, redaction and live smoke evidence |
+| 6–13 | Not started | Implementation pending |
 | 14 — End-to-end acceptance | Blocked externally | Warranty Vault truth/APK/assets, emulator, Flow, and FFmpeg evidence unavailable |
 | 15 — Release audit | Not started | Pending implementation |
 
