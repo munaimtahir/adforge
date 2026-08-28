@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import re
 from datetime import timedelta
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from adforge.models import (
@@ -171,6 +173,33 @@ class WorkerJobService:
         job = self._owned_job(worker, job_id, {WorkerJobStatus.CLAIMED, WorkerJobStatus.RUNNING})
         self._ledger(job, "worker_job_progress", "RUNNING", worker=worker, detail=detail)
         return job
+
+    def resolve_input(self, worker: WorkerNode, job_id: str, filename: str) -> Path:
+        """Resolve a job input file (e.g. the APK to install) for the leased worker.
+
+        Only a filename the job's own payload declared (`apk_filename`, matched
+        against `apk_relative_path`) may be fetched — a worker cannot use this to
+        read arbitrary campaign workspace files, and a worker without the lease on
+        this job cannot read it at all.
+        """
+        job = self._owned_job(worker, job_id, {WorkerJobStatus.CLAIMED, WorkerJobStatus.RUNNING})
+        relative_path = job.payload.get("apk_relative_path")
+        expected_filename = job.payload.get("apk_filename")
+        try:
+            safe_name = safe_component(filename)
+        except UnsafePathError as exc:
+            raise WorkerNotFoundError("job declares no such input") from exc
+        if not relative_path or not expected_filename or safe_name != expected_filename:
+            raise WorkerNotFoundError("job declares no such input")
+        try:
+            resolved = self.services.storage.campaign_path(
+                job.campaign_id, *Path(relative_path).parts
+            )
+        except UnsafePathError as exc:
+            raise WorkerNotFoundError("job input path is invalid") from exc
+        if not resolved.is_file():
+            raise WorkerNotFoundError("job input file does not exist")
+        return resolved
 
     def store_artifact(
         self,
@@ -445,6 +474,16 @@ def build_worker_router(services: Services, job_service: WorkerJobService) -> AP
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except WorkerConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.get("/jobs/{job_id}/inputs/{filename}")
+    def download_input(worker: Worker, job_id: str, filename: str) -> FileResponse:
+        try:
+            resolved = job_service.resolve_input(worker, job_id, filename)
+        except WorkerNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except WorkerConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return FileResponse(resolved, filename=resolved.name, media_type="application/octet-stream")
 
     @router.post("/jobs/{job_id}/progress")
     def progress(worker: Worker, job_id: str, body: ProgressRequest) -> WorkerJob:

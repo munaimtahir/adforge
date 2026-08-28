@@ -21,7 +21,12 @@ from adforge.models import (
 from adforge.orchestrator import Orchestrator
 from adforge.services import Services
 from adforge.web import WebContext, create_app
-from adforge.worker_api import WorkerConflictError, WorkerJobService, WorkerProtocolError
+from adforge.worker_api import (
+    WorkerConflictError,
+    WorkerJobService,
+    WorkerNotFoundError,
+    WorkerProtocolError,
+)
 from adforge.worker_auth import WorkerAuthError, authenticate, issue_token
 
 PASSWORD = "fixture-password-123"  # noqa: S105
@@ -356,3 +361,88 @@ def test_worker_api_full_http_round_trip_is_outbound_only_and_bearer_authenticat
     resumed = context.services.campaigns.get(campaign.id)
     assert resumed is not None
     assert resumed.state == CampaignState.CREATED
+
+
+def _apk_job(services: Services, campaign: Campaign) -> tuple[bytes, str]:
+    workspace = services.storage.campaign_workspace(campaign.id)
+    apk_bytes = b"fixture-apk-bytes-not-a-real-android-package"
+    apk_path = workspace / "app-capture" / "source.apk"
+    apk_path.write_bytes(apk_bytes)
+    checksum = hashlib.sha256(apk_bytes).hexdigest()
+    job_service = WorkerJobService(services)
+    job_service.create_job(
+        campaign.id,
+        "android_capture",
+        {
+            "package_id": "com.fixture.demo",
+            "apk_relative_path": "app-capture/source.apk",
+            "apk_filename": "source.apk",
+            "apk_sha256": checksum,
+        },
+        "android-job-1",
+    )
+    return apk_bytes, checksum
+
+
+def test_worker_can_download_a_declared_job_input(services: Services) -> None:
+    campaign = waiting_campaign(services)
+    apk_bytes, _ = _apk_job(services, campaign)
+    job_service = WorkerJobService(services)
+    worker, _ = make_worker(services, capabilities=["android_capture"])
+    claimed = job_service.claim(worker)
+    assert claimed is not None
+    resolved = job_service.resolve_input(worker, claimed.id, "source.apk")
+    assert resolved.read_bytes() == apk_bytes
+
+
+def test_worker_cannot_download_an_undeclared_or_unleased_input(services: Services) -> None:
+    campaign = waiting_campaign(services)
+    _apk_job(services, campaign)
+    job_service = WorkerJobService(services)
+    owner, _ = make_worker(services, "owner", capabilities=["android_capture"])
+    intruder, _ = make_worker(services, "intruder", capabilities=["android_capture"])
+    claimed = job_service.claim(owner)
+    assert claimed is not None
+    with pytest.raises(WorkerNotFoundError):
+        job_service.resolve_input(owner, claimed.id, "not-declared.apk")
+    with pytest.raises(WorkerConflictError):
+        job_service.resolve_input(intruder, claimed.id, "source.apk")
+    with pytest.raises(WorkerNotFoundError):
+        job_service.resolve_input(owner, claimed.id, "..")
+
+
+def test_worker_api_serves_declared_job_input_over_http(web_client: TestClient) -> None:
+    csrf = login(web_client)
+    context: WebContext = web_client.app.state.context
+    campaign = waiting_campaign(context.services)
+    apk_bytes, _ = _apk_job(context.services, campaign)
+
+    created = web_client.post(
+        "/settings/workers",
+        data={"csrf": csrf, "name": "android-laptop", "capabilities": "android_capture"},
+    )
+    token = re.search(r"<code>([^<]+)</code>", created.text).group(1)  # type: ignore[union-attr]
+    headers = {"authorization": f"Bearer {token}"}
+
+    web_client.post("/api/worker/heartbeat", headers=headers, json={
+        "agent_version": "0.2.0",
+        "os": "Windows",
+        "architecture": "AMD64",
+        "capabilities": ["android_capture"],
+        "metadata": {},
+    })
+    claim = web_client.post("/api/worker/jobs/claim", headers=headers)
+    job = claim.json()["job"]
+    assert job is not None
+
+    download = web_client.get(f"/api/worker/jobs/{job['id']}/inputs/source.apk", headers=headers)
+    assert download.status_code == 200
+    assert download.content == apk_bytes
+
+    missing = web_client.get(f"/api/worker/jobs/{job['id']}/inputs/nope.apk", headers=headers)
+    assert missing.status_code == 404
+
+    traversal = web_client.get(
+        f"/api/worker/jobs/{job['id']}/inputs/..%2f..%2fetc%2fpasswd", headers=headers
+    )
+    assert traversal.status_code in (404, 422)
