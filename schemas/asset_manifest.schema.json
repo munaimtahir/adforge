@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AdForge Asset Manifest",
+  "type": "object",
+  "required": [
+    "campaign_id",
+    "assets"
+  ],
+  "properties": {
+    "campaign_id": {
+      "type": "string"
+    },
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "asset_id",
+          "asset_type",
+          "status",
+          "filepath"
+        ],
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          },
+          "asset_type": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string"
+          },
+          "qc_score": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "filepath": {
+            "type": "string"
+          },
+          "checksum": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "used_in_final": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,30 @@
+app:
+  name: AdForge
+  single_user: true
+  active_campaign_limit: 1
+
+production:
+  default_aspect_ratio: "9:16"
+  default_duration_seconds: 20
+  supported_aspect_ratios: ["9:16", "16:9", "1:1"]
+  supported_durations_seconds: [6, 10, 15, 20, 30]
+  max_retries_after_initial_attempt: 2
+  qc_profile: lenient_v1
+  auto_prune: false
+
+providers:
+  subscription_first: true
+  api_fallback_enabled: false
+  claude_code_enabled: true
+  codex_cli_enabled: true
+  flow_browser_enabled: true
+
+render:
+  canonical_renderer: ffmpeg
+
+storage:
+  mode: local
+
+android:
+  emulator_profiles: 1
+  handoff_required_when_unavailable: true
