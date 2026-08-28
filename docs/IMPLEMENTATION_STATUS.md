@@ -22,22 +22,44 @@ proves the full wired pipeline end to end with real FFmpeg/audio/QC and a script
 recovery, producing an actual playable 1080×1920 MP4 — see its own module docstring.
 Commit `bb80b31`.
 
-**Update, same session:** B-007 is now fully resolved (both Claude and Codex
-authenticated for real on production; platform verdict `PLATFORM_READY`, first time
-ever) and B-003 (Flow login) is resolved on this local external worker. Phase 19
-(commits `bb80b31`, `487b51f`, `c1706d1`) is deployed to production: backed up
-(`/opt/adforge/backups/pre-phase19-20260828-205000.tar.gz`), synced, reinstalled into
-`/opt/adforge/venv`, scratch-port smoke-tested (`HTTP_200` against a throwaway data
-root), service restarted cleanly, public HTTPS verified (`HTTP_200`). See
-`docs/BLOCKERS.md` for full evidence. Deployed commit: `c1706d1`.
+**Update, same session (see `docs/BLOCKERS.md` for full evidence and commit-by-commit
+detail — this is a summary, not a duplicate):**
+
+- B-007 fully resolved: both Claude and Codex authenticated for real on production;
+  platform verdict `PLATFORM_READY` (first time ever for this project).
+- The real DemoTask campaign (`a0d5338a-4535-4279-9aff-2746593d5add`, product
+  `demotask`) ran through the actual production web app, not a fixture: real Product
+  Truth validation, real Claude/Codex Strategy/Script/Storyboard/Asset-Plan calls (one
+  genuine self-correcting retry on a script timing overlap), real `WorkerJob`
+  dispatch. This single real run surfaced and got real fixes for five internal gaps
+  no test suite had caught, because nothing had ever driven a real campaign through
+  the live app before: `APKIngestor` had zero callers; `ADFORGE_IMPORT_ROOT` was
+  declared but never read; there was no way to register any product but
+  `warranty-vault`; AI-produced claims needed explicit verbatim-or-omit prompting
+  discipline; `/tasks/{id}/retry` created a row `CampaignWorker` could never
+  discover. All fixed, tested, deployed.
+- Investigated and closed out browser-automated Flow generation as a dead end:
+  Google's own anti-automation controls block it at three independent, deliberate
+  layers (verified live) — not something to bypass. Built two real alternatives
+  instead: Gemini API (Veo) direct generation (`GEMINI_API_KEY`, no browser
+  automation), and a manual worker-job completion UI (paste the AI-generated prompt
+  into Flow yourself, upload the result — completes through the identical
+  claim/store/complete path a real worker uses). Also added real browser-based APK
+  upload for campaign creation (previously a server-side path only).
+- Deployed commit: see `DEPLOYED_COMMIT.txt` on production, or `git log` for the
+  running list of commits this session (`bb80b31` through `fa3c1b9` at last count).
+  132 tests pass, ruff/mypy clean throughout.
 
 Release verdict remains **ADFORGE v1 — NOT READY** for the canonical Warranty Vault
-campaign specifically (B-001: Product Truth/APK/brand assets still absent — this is
-independent of everything above and requires real Warranty Vault data, not a
-technical blocker). No final Warranty Vault MP4 was produced. The real end-to-end
-synthetic (DemoTask) acceptance campaign against genuine Claude/Codex/Flow/Android —
-proving the newly-deployed handlers work for real, not just in tests — is in progress
-as the next step.
+campaign specifically (B-001: Product Truth/APK/brand assets still absent — independent
+of everything above, needs real Warranty Vault data, not a technical blocker). No final
+Warranty Vault MP4 was produced. **The DemoTask campaign is one real step from a
+genuine final MP4**: its two `flow_generation` `WorkerJob`s are sitting `FAILED`
+(exhausted automated Flow-automation attempts, expected — see above), exact
+AI-generated prompts already available on the campaign page, waiting on a human to
+paste them into Flow and upload the result (or a `GEMINI_API_KEY`) to complete them —
+everything downstream (Android capture, audio, edit, render, QC, export) is real,
+tested, and already proven to work end to end once assets land.
 
 ## Phase ledger
 
