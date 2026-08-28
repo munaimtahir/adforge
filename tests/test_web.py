@@ -11,7 +11,9 @@ from adforge.auth import hash_password
 from adforge.models import (
     Campaign,
     CampaignState,
+    CampaignTask,
     Product,
+    TaskState,
     TruthReadiness,
     WorkerJob,
     WorkerJobStatus,
@@ -347,6 +349,53 @@ def test_manual_worker_job_completion_rejects_empty_upload(client: TestClient) -
     )
 
     assert response.status_code == 422
+
+
+def test_retry_resets_the_same_task_row_so_campaign_worker_will_find_it(
+    client: TestClient,
+) -> None:
+    """The real bug found live: retry used to create a new CampaignTask row under
+    a "...:manual-retry:N" key, but CampaignWorker.run() only ever looks up (and
+    creates, if missing) the task at its own deterministic key -- so the retried
+    row was never discovered and the "Retry" button silently did nothing for any
+    CampaignWorker-driven stage. Retrying must reset the *same* row instead.
+    """
+    csrf = login(client)
+    context: WebContext = client.app.state.context
+    campaign = context.services.campaigns.save(
+        Campaign(
+            product_id="product-1",
+            name="Retry test",
+            brief="brief",
+            state=CampaignState.BLOCKED,
+            resume_state=CampaignState.STRATEGY,
+            active=False,
+        )
+    )
+    task = context.services.tasks.save(
+        CampaignTask(
+            campaign_id=campaign.id,
+            task_type="strategy",
+            idempotency_key="stage:strategy:v1",
+            state=TaskState.BLOCKED,
+            attempt=3,
+            max_attempts=3,
+            failure_summary="boom",
+        )
+    )
+
+    response = client.post(
+        f"/tasks/{task.id}/retry", data={"csrf": csrf}, follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    all_tasks = context.services.tasks.find_by("campaign_id", campaign.id)
+    assert len(all_tasks) == 1
+    assert all_tasks[0].id == task.id
+    assert all_tasks[0].state == TaskState.PENDING
+    assert all_tasks[0].attempt == 0
+    assert all_tasks[0].failure_summary is None
+    assert all_tasks[0].idempotency_key == "stage:strategy:v1"
 
 
 def test_one_active_campaign_is_enforced_in_ux_and_action(client: TestClient) -> None:

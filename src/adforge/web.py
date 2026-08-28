@@ -429,12 +429,21 @@ def create_app(
             raise HTTPException(status_code=404)
         if task.state not in {TaskState.BLOCKED, TaskState.FAILED}:
             raise HTTPException(status_code=409, detail="task is not retryable")
-        context.orchestrator.create_task(
-            task.campaign_id,
-            task.task_type,
-            f"{task.idempotency_key}:manual-retry:{task.attempt + 1}",
-            dependencies=task.dependencies,
-            targeted_asset_ids=task.targeted_asset_ids,
+        # Reset the existing task in place (attempt/state only) rather than
+        # creating a new CampaignTask row under a "...:manual-retry:N" key.
+        # CampaignWorker.run() only ever looks up (and creates, if missing) the
+        # task at its own deterministic idempotency key
+        # (f"stage:{state}:v{transition_count}") -- a differently-keyed row is
+        # simply never discovered by it, so the previous create_task() call left
+        # every CampaignWorker-driven stage's "Retry" button doing nothing
+        # (verified live against the real DemoTask campaign). This also matches
+        # how Orchestrator.execute_task's own internal retry loop already works:
+        # it re-saves the same task row per attempt, not a new row -- history is
+        # the ledger's job (task_attempt_started/failed events), not extra rows.
+        context.services.tasks.save(
+            task.model_copy(
+                update={"attempt": 0, "state": TaskState.PENDING, "failure_summary": None}
+            )
         )
         return RedirectResponse(
             f"/campaigns/{task.campaign_id}", status_code=status.HTTP_303_SEE_OTHER
