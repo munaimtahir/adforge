@@ -166,6 +166,39 @@ class WorkerJobService:
         self._ledger(claimed, "worker_job_claimed", "CLAIMED", worker=worker)
         return claimed
 
+    def claim_specific(self, worker: WorkerNode, job_id: str) -> WorkerJob:
+        """Claim one exact job by id, for a human manually fulfilling it via the web
+        UI (`web.py`'s manual worker-job completion route) rather than a real
+        worker's `claim()` scan for the oldest matching `PENDING` job. Otherwise
+        identical bookkeeping to `claim()`.
+        """
+        with self.services.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload_json FROM worker_jobs WHERE id=?", (job_id,)
+            ).fetchone()
+            if row is None:
+                raise WorkerNotFoundError(f"worker job not found: {job_id}")
+            candidate = WorkerJob.model_validate_json(row["payload_json"])
+            if candidate.status != WorkerJobStatus.PENDING:
+                raise WorkerConflictError(f"job is not PENDING: {candidate.status}")
+            claimed = candidate.model_copy(
+                update={
+                    "status": WorkerJobStatus.CLAIMED,
+                    "worker_id": worker.id,
+                    "lease_expires_at": utc_now() + timedelta(seconds=self.lease_seconds),
+                    "attempt": candidate.attempt + 1,
+                }
+            )
+            connection.execute(
+                "UPDATE worker_jobs SET payload_json=?, updated_at=? WHERE id=?",
+                (claimed.model_dump_json(), claimed.updated_at.isoformat(), claimed.id),
+            )
+        self.services.worker_nodes.save(worker.model_copy(update={"active_job_id": claimed.id}))
+        self._append_attempt(claimed, worker, WorkerJobStatus.CLAIMED)
+        self._ledger(claimed, "worker_job_claimed", "CLAIMED", worker=worker)
+        return claimed
+
     def renew_lease(self, worker: WorkerNode, job_id: str) -> WorkerJob:
         job = self._owned_job(worker, job_id, {WorkerJobStatus.CLAIMED, WorkerJobStatus.RUNNING})
         renewed = job.model_copy(

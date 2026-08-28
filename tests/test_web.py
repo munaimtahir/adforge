@@ -8,7 +8,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from adforge.auth import hash_password
-from adforge.models import Campaign, Product, TruthReadiness
+from adforge.models import (
+    Campaign,
+    CampaignState,
+    Product,
+    TruthReadiness,
+    WorkerJob,
+    WorkerJobStatus,
+)
 from adforge.web import WebContext, create_app
 
 PASSWORD = "fixture-password-123"  # noqa: S105
@@ -166,6 +173,76 @@ def test_new_product_form_rejects_invalid_truth_json(client: TestClient) -> None
     assert "invalid JSON" in rejected.text
     context: WebContext = client.app.state.context
     assert context.services.products.get("broken-product") is None
+
+
+def test_manual_worker_job_completion_uploads_artifact_and_resumes(
+    client: TestClient,
+) -> None:
+    csrf = login(client)
+    context: WebContext = client.app.state.context
+    campaign = context.services.campaigns.save(
+        Campaign(
+            product_id="product-1",
+            name="Manual completion",
+            brief="brief",
+            state=CampaignState.WAITING_FOR_WORKER,
+            resume_state=CampaignState.ASSET_GENERATION,
+            active=False,
+        )
+    )
+    job = context.services.worker_jobs.save(
+        WorkerJob(
+            campaign_id=campaign.id,
+            capability="flow_generation",
+            payload={
+                "prompt": "A fictional demo clip",
+                "output_filename": "scene.mp4",
+                "scene_id": "scene-1",
+            },
+            idempotency_key="manual-test-key",
+        )
+    )
+
+    response = client.post(
+        f"/worker-jobs/{job.id}/manual-complete",
+        data={"csrf": csrf},
+        files=[("files", ("scene.mp4", b"not-empty-video-bytes", "video/mp4"))],
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    updated_job = context.services.worker_jobs.get(job.id)
+    assert updated_job is not None
+    assert updated_job.status == WorkerJobStatus.COMPLETE
+    assert updated_job.worker_id == "manual-admin-worker"
+    assets = context.services.assets.find_by("campaign_id", campaign.id)
+    assert len(assets) == 1
+    assert assets[0].source == "worker:flow_generation"
+    assert assets[0].asset_type == "generated_video"
+
+
+def test_manual_worker_job_completion_rejects_empty_upload(client: TestClient) -> None:
+    csrf = login(client)
+    context: WebContext = client.app.state.context
+    campaign = context.services.campaigns.save(
+        Campaign(product_id="product-1", name="Manual empty", brief="brief")
+    )
+    job = context.services.worker_jobs.save(
+        WorkerJob(
+            campaign_id=campaign.id,
+            capability="flow_generation",
+            payload={"prompt": "x", "output_filename": "scene.mp4", "scene_id": "scene-1"},
+            idempotency_key="manual-empty-key",
+        )
+    )
+
+    response = client.post(
+        f"/worker-jobs/{job.id}/manual-complete",
+        data={"csrf": csrf},
+        files=[("files", ("scene.mp4", b"", "video/mp4"))],
+    )
+
+    assert response.status_code == 422
 
 
 def test_one_active_campaign_is_enforced_in_ux_and_action(client: TestClient) -> None:
