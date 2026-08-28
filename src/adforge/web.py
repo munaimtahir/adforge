@@ -12,10 +12,13 @@ from fastapi.templating import Jinja2Templates
 
 from adforge.auth import SessionSigner, verify_password
 from adforge.bootstrap import ensure_warranty_vault_product
-from adforge.models import Campaign, CampaignState, TaskState, TruthReadiness
+from adforge.health import collect_capabilities, platform_status
+from adforge.models import Campaign, CampaignState, TaskState, TruthReadiness, WorkerNode
 from adforge.orchestrator import ActiveCampaignError, Orchestrator, TransitionError
 from adforge.services import Services
 from adforge.storage import UnsafePathError
+from adforge.worker_api import WorkerJobService, build_worker_router
+from adforge.worker_auth import issue_token
 
 SESSION_COOKIE = "adforge_session"
 
@@ -37,6 +40,7 @@ class WebContext:
         self.templates = templates
         self.secure_cookie = secure_cookie
         self.orchestrator = Orchestrator(services)
+        self.worker_jobs = WorkerJobService(services)
 
 
 def create_app(
@@ -77,6 +81,10 @@ def create_app(
     app = FastAPI(title="AdForge", docs_url=None, redoc_url=None)
     app.state.context = context
     app.mount("/static", StaticFiles(directory=package_root / "static"), name="static")
+    context.worker_jobs.reclaim_expired()
+    context.worker_jobs.sweep_offline()
+    app.state.worker_services = services
+    app.include_router(build_worker_router(services, context.worker_jobs))
 
     def current_session(request: Request) -> dict[str, Any]:
         session = context.signer.verify(request.cookies.get(SESSION_COOKIE))
@@ -99,7 +107,13 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="invalid CSRF token")
 
     @app.exception_handler(status.HTTP_401_UNAUTHORIZED)
-    async def unauthorized(request: Request, _: HTTPException) -> RedirectResponse:
+    async def unauthorized(request: Request, exc: HTTPException) -> Response:
+        if request.url.path.startswith("/api/worker"):
+            return Response(
+                content=json.dumps({"detail": exc.detail}),
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                media_type="application/json",
+            )
         return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
 
     @app.get("/login", response_class=HTMLResponse)
@@ -307,16 +321,100 @@ def create_app(
 
     @app.get("/settings", response_class=HTMLResponse)
     def settings(request: Request, _: Session) -> HTMLResponse:
-        capabilities = {
-            "database": "READY",
-            "storage": "READY",
-            "ffmpeg": "READY" if shutil_which("ffmpeg") else "BLOCKED",
-            "chromium": "READY" if shutil_which("chromium") else "BLOCKED",
-            "adb": "READY" if shutil_which("adb") else "BLOCKED",
-            "claude": "READY" if shutil_which("claude") else "BLOCKED",
-            "codex": "READY" if shutil_which("codex") else "BLOCKED",
-        }
-        return render(request, "settings.html", capabilities=capabilities)
+        capabilities = collect_capabilities(context.services)
+        return render(
+            request,
+            "settings.html",
+            capabilities=capabilities,
+            platform=platform_status(capabilities),
+        )
+
+    @app.post("/settings/diagnostics/run")
+    def run_diagnostics(
+        session: Session, csrf: Annotated[str, Form()]
+    ) -> RedirectResponse:
+        require_csrf(session, csrf)
+        collect_capabilities(context.services, force_slow=True)
+        return RedirectResponse("/settings", status_code=status.HTTP_303_SEE_OTHER)
+
+    @app.get("/settings/workers", response_class=HTMLResponse)
+    def workers(request: Request, _: Session) -> HTMLResponse:
+        context.worker_jobs.sweep_offline()
+        return render(
+            request, "workers.html", workers=context.services.worker_nodes.list(), new_token=None
+        )
+
+    @app.post("/settings/workers", response_class=HTMLResponse)
+    def create_worker(
+        request: Request,
+        session: Session,
+        csrf: Annotated[str, Form()],
+        name: Annotated[str, Form(min_length=1, max_length=100)],
+        capabilities: Annotated[str, Form()] = "synthetic_echo",
+    ) -> HTMLResponse:
+        require_csrf(session, csrf)
+        worker = context.services.worker_nodes.save(
+            WorkerNode(
+                name=name,
+                agent_version="unregistered",
+                os="unknown",
+                architecture="unknown",
+                capabilities=[item.strip() for item in capabilities.split(",") if item.strip()],
+            )
+        )
+        raw_token = issue_token(context.services, worker)
+        return render(
+            request,
+            "workers.html",
+            workers=context.services.worker_nodes.list(),
+            new_token=raw_token,
+            new_worker_name=worker.name,
+        )
+
+    @app.get("/settings/workers/{worker_id}", response_class=HTMLResponse)
+    def worker_detail(request: Request, worker_id: str, _: Session) -> HTMLResponse:
+        worker = context.services.worker_nodes.get(worker_id)
+        if worker is None:
+            raise HTTPException(status_code=404)
+        jobs = context.services.worker_jobs.find_by("worker_id", worker_id)
+        attempts = [
+            attempt
+            for attempt in context.services.worker_job_attempts.list()
+            if attempt.worker_id == worker_id
+        ]
+        return render(
+            request, "worker_detail.html", worker=worker, jobs=jobs, attempts=attempts
+        )
+
+    @app.post("/settings/workers/{worker_id}/revoke")
+    def revoke_worker(
+        worker_id: str, session: Session, csrf: Annotated[str, Form()]
+    ) -> RedirectResponse:
+        require_csrf(session, csrf)
+        worker = context.services.worker_nodes.get(worker_id)
+        if worker is None:
+            raise HTTPException(status_code=404)
+        for token in context.services.worker_tokens.find_by("worker_id", worker_id):
+            if not token.revoked:
+                context.services.worker_tokens.save(token.model_copy(update={"revoked": True}))
+        return RedirectResponse("/settings/workers", status_code=status.HTTP_303_SEE_OTHER)
+
+    @app.post("/settings/workers/{worker_id}/rotate", response_class=HTMLResponse)
+    def rotate_worker_token(
+        request: Request, worker_id: str, session: Session, csrf: Annotated[str, Form()]
+    ) -> HTMLResponse:
+        require_csrf(session, csrf)
+        worker = context.services.worker_nodes.get(worker_id)
+        if worker is None:
+            raise HTTPException(status_code=404)
+        raw_token = issue_token(context.services, worker)
+        return render(
+            request,
+            "workers.html",
+            workers=context.services.worker_nodes.list(),
+            new_token=raw_token,
+            new_worker_name=worker.name,
+        )
 
     return app
 
@@ -337,9 +435,3 @@ def secrets_compare(left: str, right: str) -> bool:
     import hmac
 
     return hmac.compare_digest(left, right)
-
-
-def shutil_which(command: str) -> str | None:
-    import shutil
-
-    return shutil.which(command)

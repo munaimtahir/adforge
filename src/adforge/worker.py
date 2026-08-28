@@ -38,6 +38,7 @@ STOPPED_STATES = {
     CampaignState.FAILED,
     CampaignState.WAITING_FOR_EXTERNAL_ASSET,
     CampaignState.WAITING_FOR_USER,
+    CampaignState.WAITING_FOR_WORKER,
     CampaignState.COMPLETE,
 }
 

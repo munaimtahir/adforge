@@ -45,6 +45,7 @@ EXCEPTIONAL_STATES = {
     CampaignState.FAILED,
     CampaignState.WAITING_FOR_EXTERNAL_ASSET,
     CampaignState.WAITING_FOR_USER,
+    CampaignState.WAITING_FOR_WORKER,
 }
 
 LEGAL_TRANSITIONS: dict[CampaignState, set[CampaignState]] = {
@@ -57,6 +58,7 @@ LEGAL_TRANSITIONS[CampaignState.COMPLETE] = set()
 for state in PRIMARY_STATES + (CampaignState.REPAIR,):
     if state != CampaignState.COMPLETE:
         LEGAL_TRANSITIONS[state] |= EXCEPTIONAL_STATES
+LEGAL_TRANSITIONS[CampaignState.WAITING_FOR_WORKER] = {CampaignState.BLOCKED}
 
 
 TaskAction = Callable[[int], dict[str, Any]]

@@ -50,6 +50,7 @@ class CampaignState(StrEnum):
     FAILED = "FAILED"
     WAITING_FOR_EXTERNAL_ASSET = "WAITING_FOR_EXTERNAL_ASSET"
     WAITING_FOR_USER = "WAITING_FOR_USER"
+    WAITING_FOR_WORKER = "WAITING_FOR_WORKER"
 
 
 class TaskState(StrEnum):
@@ -172,6 +173,78 @@ class Configuration(Record):
     secret: bool = False
 
 
+class WorkerStatus(StrEnum):
+    ONLINE = "ONLINE"
+    OFFLINE = "OFFLINE"
+
+
+class WorkerJobStatus(StrEnum):
+    PENDING = "PENDING"
+    CLAIMED = "CLAIMED"
+    RUNNING = "RUNNING"
+    COMPLETE = "COMPLETE"
+    FAILED = "FAILED"
+    EXPIRED = "EXPIRED"
+
+
+class WorkerErrorClass(StrEnum):
+    RETRYABLE = "RETRYABLE"
+    NON_RETRYABLE = "NON_RETRYABLE"
+    EXTERNAL_ACTION_REQUIRED = "EXTERNAL_ACTION_REQUIRED"
+
+
+class WorkerNode(Record):
+    name: str = Field(min_length=1)
+    agent_version: str
+    os: str
+    architecture: str
+    status: WorkerStatus = WorkerStatus.OFFLINE
+    last_heartbeat_at: datetime | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    active_job_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkerToken(Record):
+    worker_id: str
+    token_hash: str
+    label: str = "default"
+    revoked: bool = False
+    last_used_at: datetime | None = None
+
+
+class WorkerJob(Record):
+    campaign_id: str
+    task_id: str | None = None
+    capability: str = Field(min_length=1)
+    status: WorkerJobStatus = WorkerJobStatus.PENDING
+    payload: dict[str, Any] = Field(default_factory=dict)
+    worker_id: str | None = None
+    lease_expires_at: datetime | None = None
+    attempt: int = Field(default=0, ge=0, le=3)
+    max_attempts: int = Field(default=3, ge=1, le=3)
+    idempotency_key: str
+    failure_summary: str | None = None
+
+
+class WorkerJobAttempt(Record):
+    job_id: str
+    worker_id: str | None = None
+    attempt: int = Field(ge=1, le=3)
+    status: WorkerJobStatus
+    error_class: WorkerErrorClass | None = None
+    detail: str | None = None
+
+
+class WorkerArtifact(Record):
+    job_id: str
+    filename: str = Field(min_length=1)
+    checksum: str = Field(pattern=r"^[a-f0-9]{64}$")
+    content_type: str
+    size_bytes: int = Field(ge=0)
+    filepath: str
+
+
 DOMAIN_MODELS: tuple[type[Record], ...] = (
     Product,
     ProductTruthSnapshot,
@@ -184,4 +257,9 @@ DOMAIN_MODELS: tuple[type[Record], ...] = (
     LedgerEvent,
     Render,
     Configuration,
+    WorkerNode,
+    WorkerToken,
+    WorkerJob,
+    WorkerJobAttempt,
+    WorkerArtifact,
 )

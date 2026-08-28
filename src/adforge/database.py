@@ -19,21 +19,44 @@ TABLES = (
     "ledger_events",
     "renders",
     "configurations",
+    "worker_nodes",
+    "worker_tokens",
+    "worker_jobs",
+    "worker_job_attempts",
+    "worker_artifacts",
 )
+
+WORKER_TABLES = (
+    "worker_nodes",
+    "worker_tokens",
+    "worker_jobs",
+    "worker_job_attempts",
+    "worker_artifacts",
+)
+
+
+SCHEMA_MIGRATIONS_DDL = (
+    "CREATE TABLE IF NOT EXISTS schema_migrations "
+    "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+)
+
+
+def _table_ddl(table: str) -> str:
+    return (
+        f"CREATE TABLE IF NOT EXISTS {table} ("
+        "id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, "
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
+
 
 MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
     (
         1,
-        (
-            "CREATE TABLE IF NOT EXISTS schema_migrations "
-            "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
-            *(
-                f"CREATE TABLE IF NOT EXISTS {table} ("
-                "id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, "
-                "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
-                for table in TABLES
-            ),
-        ),
+        tuple(_table_ddl(table) for table in TABLES if table not in WORKER_TABLES),
+    ),
+    (
+        2,
+        tuple(_table_ddl(table) for table in WORKER_TABLES),
     ),
 )
 
@@ -60,13 +83,13 @@ class Database:
 
     def migrate(self) -> None:
         with self.connect() as connection:
-            connection.execute(MIGRATIONS[0][1][0])
+            connection.execute(SCHEMA_MIGRATIONS_DDL)
             rows = connection.execute("SELECT version FROM schema_migrations")
             applied = {row["version"] for row in rows}
             for version, statements in MIGRATIONS:
                 if version in applied:
                     continue
-                for statement in statements[1:]:
+                for statement in statements:
                     connection.execute(statement)
                 connection.execute(
                     "INSERT INTO schema_migrations(version, applied_at) "

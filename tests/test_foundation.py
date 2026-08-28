@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from adforge.database import TABLES, Database
+from adforge.database import MIGRATIONS, TABLES, Database
 from adforge.models import (
     Asset,
     Campaign,
@@ -40,7 +40,7 @@ def test_database_migration_is_repeatable(tmp_path: Path) -> None:
         }
         versions = connection.execute("SELECT COUNT(*) AS count FROM schema_migrations").fetchone()
     assert set(TABLES).issubset(names)
-    assert versions["count"] == 1
+    assert versions["count"] == len(MIGRATIONS)
 
 
 def test_all_domain_repositories_support_crud(services: Services) -> None:

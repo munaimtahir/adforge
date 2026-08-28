@@ -18,6 +18,11 @@ from adforge.models import (
     ProviderExecution,
     QCResult,
     Render,
+    WorkerArtifact,
+    WorkerJob,
+    WorkerJobAttempt,
+    WorkerNode,
+    WorkerToken,
 )
 from adforge.repository import ImmutableRepository, Repository
 from adforge.storage import LocalStorage
@@ -43,6 +48,13 @@ class Services:
         self.renders = Repository(self.database, "renders", Render)
         self.configurations = Repository(self.database, "configurations", Configuration)
         self.ledger = ProductionLedger(self.storage, self.ledger_events)
+        self.worker_nodes = Repository(self.database, "worker_nodes", WorkerNode)
+        self.worker_tokens = Repository(self.database, "worker_tokens", WorkerToken)
+        self.worker_jobs = Repository(self.database, "worker_jobs", WorkerJob)
+        self.worker_job_attempts = ImmutableRepository(
+            self.database, "worker_job_attempts", WorkerJobAttempt
+        )
+        self.worker_artifacts = Repository(self.database, "worker_artifacts", WorkerArtifact)
 
     def initialize(self) -> None:
         self.storage.initialize()

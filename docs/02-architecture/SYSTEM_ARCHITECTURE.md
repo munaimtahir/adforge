@@ -25,9 +25,27 @@ Production Orchestrator
   +-- QC Service
   +-- Handoff Service
   +-- Production Ledger
+  +-- Worker API (/api/worker/*, bearer-token auth, distributed job leasing)
   |
 Local Persistent Filesystem
+
+Outbound HTTPS only, no inbound port on the worker side:
+
+AdForge Web/API <---- heartbeat/claim/lease/artifact/complete ---- External Worker
+                                                                      +-- android_capture
+                                                                      +-- flow_generation
+                                                                      +-- synthetic_echo
 ```
+
+A distributed worker (e.g. an Android-capable Windows laptop) is a capability
+provider, not part of the control plane. It never receives an inbound connection
+and never runs on the VM. See `docs/02-architecture/WORKER_PROTOCOL.md` for the
+registration/heartbeat/claim/lease/artifact/complete contract, and
+`docs/08-security/SECURITY_MODEL.md` for the worker authentication model. A worker
+being offline degrades only the capability it provided
+(`android_capture`/`flow_generation`); it does not make the platform `NOT_READY` —
+a campaign that needs that capability waits (`WAITING_FOR_WORKER`) instead of
+failing.
 
 ## Recommended implementation baseline
 Technical details may change if tests prove a better choice:
@@ -44,6 +62,8 @@ Technical details may change if tests prove a better choice:
 - Git
 
 ## Architectural boundaries
+- The VM is the authoritative control plane; distributed workers provide external
+  capabilities (Android capture, Flow browser generation) and connect outbound only.
 - Orchestrator owns state and retries.
 - AI providers return task outputs; they do not own workflow state.
 - Provider adapters expose stable internal contracts.
