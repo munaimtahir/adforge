@@ -62,3 +62,17 @@ class Repository[RecordT: Record]:
 
     def export_json(self) -> str:
         return json.dumps([record.model_dump(mode="json") for record in self.list()])
+
+
+class ImmutableRepository[RecordT: Record](Repository[RecordT]):
+    """Repository that allows initial persistence but rejects record replacement."""
+
+    def save(self, record: RecordT) -> RecordT:
+        existing = self.get(record.id)
+        if existing is not None:
+            existing_payload = existing.model_dump(exclude={"updated_at"})
+            proposed_payload = record.model_dump(exclude={"updated_at"})
+            if existing_payload != proposed_payload:
+                raise ValueError(f"immutable {self.model.__name__} cannot be changed")
+            return existing
+        return super().save(record)

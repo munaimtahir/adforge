@@ -19,7 +19,7 @@ from adforge.models import (
     QCResult,
     Render,
 )
-from adforge.repository import Repository
+from adforge.repository import ImmutableRepository, Repository
 from adforge.storage import LocalStorage
 
 
@@ -28,7 +28,7 @@ class Services:
         self.storage = LocalStorage(runtime_root, schema_root)
         self.database = Database(runtime_root / "data" / "adforge.sqlite3")
         self.products = Repository(self.database, "products", Product)
-        self.truth_snapshots = Repository(
+        self.truth_snapshots = ImmutableRepository(
             self.database, "product_truth_snapshots", ProductTruthSnapshot
         )
         self.campaigns = Repository(self.database, "campaigns", Campaign)
