@@ -4,9 +4,9 @@ Last updated: 2026-08-28 UTC.
 
 ## Current phase
 
-Phase 5 is complete. Replaceable Claude Code and Codex CLI adapters use subscription
-CLIs, fixed argv/stdin prompts, structured JSON schemas, timeouts, secret filtering,
-capability/health routing, three attempts, and provider execution ledger records.
+Phase 6 is complete. All required logical creative roles have strict structured
+schemas, least-context immutable Product Truth requests, claim/timing/dependency
+validation, deterministic asset routing, and append-only versioned outputs/ledger.
 
 ## Phase ledger
 
@@ -18,7 +18,8 @@ capability/health routing, three attempts, and provider execution ledger records
 | 3 — State machine/orchestrator | Complete | Transition, retry, restart, lease, idempotency and repair tests |
 | 4 — Desktop web control plane | Complete | Route, auth, CSRF, campaign, lease UX, path and secret tests |
 | 5 — Claude/Codex providers | Complete | Contract, router, retry, schema, injection, redaction and live smoke evidence |
-| 6–13 | Not started | Implementation pending |
+| 6 — Creative production pipeline | Complete | Role schema, claim, timing, dependency, routing and version tests |
+| 7–13 | Not started | Implementation pending |
 | 14 — End-to-end acceptance | Blocked externally | Warranty Vault truth/APK/assets, emulator, Flow, and FFmpeg evidence unavailable |
 | 15 — Release audit | Not started | Pending implementation |
 
