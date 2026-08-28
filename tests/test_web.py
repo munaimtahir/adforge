@@ -118,6 +118,57 @@ def test_campaign_creation_path_validation_and_state_visibility(
     assert "Use approved proof" in detail.text
 
 
+def test_campaign_creation_accepts_a_real_apk_file_upload(client: TestClient) -> None:
+    csrf = login(client)
+    empty = client.post(
+        "/campaigns",
+        data={
+            "csrf": csrf,
+            "product_id": "product-1",
+            "name": "Launch",
+            "brief": "Use approved proof",
+        },
+        files=[("apk_file", ("app.apk", b"", "application/vnd.android.package-archive"))],
+    )
+    assert empty.status_code == 422
+
+    not_apk = client.post(
+        "/campaigns",
+        data={
+            "csrf": csrf,
+            "product_id": "product-1",
+            "name": "Launch",
+            "brief": "Use approved proof",
+        },
+        files=[("apk_file", ("app.txt", b"not an apk", "text/plain"))],
+    )
+    assert not_apk.status_code == 422
+
+    created = client.post(
+        "/campaigns",
+        data={
+            "csrf": csrf,
+            "product_id": "product-1",
+            "name": "Launch",
+            "brief": "Use approved proof",
+        },
+        files=[
+            (
+                "apk_file",
+                ("app.apk", b"real-apk-bytes", "application/vnd.android.package-archive"),
+            )
+        ],
+        follow_redirects=False,
+    )
+    assert created.status_code == 303
+    campaign_id = created.headers["location"].rsplit("/", 1)[-1]
+    context: WebContext = client.app.state.context
+    workspace = context.services.storage.campaign_workspace(campaign_id)
+    ingested = workspace / "app-capture" / "source.apk"
+    assert ingested.is_file()
+    assert ingested.read_bytes() == b"real-apk-bytes"
+
+
 def test_new_product_form_creates_a_ready_product_from_pasted_truth(
     client: TestClient,
 ) -> None:

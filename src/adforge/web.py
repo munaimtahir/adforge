@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 from typing import Annotated, Any
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
@@ -286,6 +287,7 @@ def create_app(
         name: Annotated[str, Form(min_length=1, max_length=100)],
         brief: Annotated[str, Form(min_length=1, max_length=10_000)],
         apk_path: Annotated[str, Form()] = "",
+        apk_file: Annotated[UploadFile | None, File()] = None,
     ) -> Response:
         require_csrf(session, csrf)
         if any(item.active for item in context.services.campaigns.list()):
@@ -293,7 +295,12 @@ def create_app(
         product = context.services.products.get(product_id)
         if product is None:
             raise HTTPException(status_code=404, detail="product not found")
-        validated_apk = validate_import_path(context.import_root, apk_path) if apk_path else None
+        if apk_file is not None and apk_file.filename:
+            validated_apk = stage_uploaded_apk(context.import_root, apk_file)
+        elif apk_path:
+            validated_apk = validate_import_path(context.import_root, apk_path)
+        else:
+            validated_apk = None
         campaign = context.services.campaigns.save(
             Campaign(product_id=product.id, name=name, brief=brief)
         )
@@ -580,6 +587,26 @@ def validate_import_path(import_root: Path, value: str) -> Path:
     if resolved.suffix.lower() != ".apk" or not resolved.is_file():
         raise HTTPException(status_code=422, detail="APK path must name an existing .apk file")
     return resolved
+
+
+def stage_uploaded_apk(import_root: Path, upload: UploadFile) -> Path:
+    """Save a real browser-uploaded APK into the import root under a generated,
+    collision-resistant name (the campaign doesn't exist yet at this point in
+    `create_campaign`, so it can't be namespaced by campaign id, and the
+    original filename is discarded rather than sanitized -- it isn't kept
+    anywhere; `APKIngestor.ingest()` copies it into the campaign workspace as
+    `source.apk` regardless). Returns the path exactly as `validate_import_path`
+    would for an operator-placed file -- the two converge on the same
+    `APKIngestor.ingest()` call afterward.
+    """
+    if Path(upload.filename or "").suffix.lower() != ".apk":
+        raise HTTPException(status_code=422, detail="uploaded file must be a .apk file")
+    destination = (import_root / f"{uuid4().hex}.apk").resolve()
+    content = upload.file.read()
+    if not content:
+        raise HTTPException(status_code=422, detail="uploaded APK is empty")
+    destination.write_bytes(content)
+    return destination
 
 
 def secrets_compare(left: str, right: str) -> bool:
