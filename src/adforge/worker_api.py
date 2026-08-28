@@ -170,7 +170,13 @@ class WorkerJobService:
         """Claim one exact job by id, for a human manually fulfilling it via the web
         UI (`web.py`'s manual worker-job completion route) rather than a real
         worker's `claim()` scan for the oldest matching `PENDING` job. Otherwise
-        identical bookkeeping to `claim()`.
+        identical bookkeeping to `claim()`, except: `FAILED` (not just `PENDING`)
+        is claimable too -- exhausting the automated attempt budget is exactly
+        the situation a human stepping in via this route is meant to resolve --
+        and the attempt counter is capped at `max_attempts` rather than
+        incremented past it, since a permanently-`FAILED` job already sits at
+        `attempt == max_attempts` and incrementing further would violate
+        `WorkerJob.attempt`'s own field constraint.
         """
         with self.services.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -180,14 +186,14 @@ class WorkerJobService:
             if row is None:
                 raise WorkerNotFoundError(f"worker job not found: {job_id}")
             candidate = WorkerJob.model_validate_json(row["payload_json"])
-            if candidate.status != WorkerJobStatus.PENDING:
-                raise WorkerConflictError(f"job is not PENDING: {candidate.status}")
+            if candidate.status not in {WorkerJobStatus.PENDING, WorkerJobStatus.FAILED}:
+                raise WorkerConflictError(f"job cannot be manually claimed: {candidate.status}")
             claimed = candidate.model_copy(
                 update={
                     "status": WorkerJobStatus.CLAIMED,
                     "worker_id": worker.id,
                     "lease_expires_at": utc_now() + timedelta(seconds=self.lease_seconds),
-                    "attempt": candidate.attempt + 1,
+                    "attempt": min(candidate.attempt + 1, candidate.max_attempts),
                 }
             )
             connection.execute(

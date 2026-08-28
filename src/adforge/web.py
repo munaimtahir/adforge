@@ -350,7 +350,7 @@ def create_app(
         if job is None:
             raise HTTPException(status_code=404)
         worker = manual_admin_worker(context.services)
-        if job.status == WorkerJobStatus.PENDING:
+        if job.status in {WorkerJobStatus.PENDING, WorkerJobStatus.FAILED}:
             job = context.worker_jobs.claim_specific(worker, job_id)
         elif job.worker_id != worker.id:
             raise HTTPException(

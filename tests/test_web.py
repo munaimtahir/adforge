@@ -221,6 +221,59 @@ def test_manual_worker_job_completion_uploads_artifact_and_resumes(
     assert assets[0].asset_type == "generated_video"
 
 
+def test_manual_worker_job_completion_works_after_automated_attempts_exhausted(
+    client: TestClient,
+) -> None:
+    """The exact real scenario found live: a flow_generation job that exhausted
+    its 3-attempt automated budget (status FAILED, attempt == max_attempts) --
+    the operator manually generating and uploading the asset must still be able
+    to complete it.
+    """
+    csrf = login(client)
+    context: WebContext = client.app.state.context
+    campaign = context.services.campaigns.save(
+        Campaign(
+            product_id="product-1",
+            name="Manual after exhaustion",
+            brief="brief",
+            state=CampaignState.WAITING_FOR_WORKER,
+            resume_state=CampaignState.ASSET_GENERATION,
+            active=False,
+        )
+    )
+    job = context.services.worker_jobs.save(
+        WorkerJob(
+            campaign_id=campaign.id,
+            capability="flow_generation",
+            status=WorkerJobStatus.FAILED,
+            attempt=3,
+            max_attempts=3,
+            failure_summary="Locator.fill: Timeout 30000ms exceeded.",
+            payload={
+                "prompt": "A fictional demo clip",
+                "output_filename": "scene.mp4",
+                "scene_id": "scene-1",
+            },
+            idempotency_key="manual-exhausted-key",
+        )
+    )
+
+    response = client.post(
+        f"/worker-jobs/{job.id}/manual-complete",
+        data={"csrf": csrf},
+        files=[("files", ("scene.mp4", b"not-empty-video-bytes", "video/mp4"))],
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    updated_job = context.services.worker_jobs.get(job.id)
+    assert updated_job is not None
+    assert updated_job.status == WorkerJobStatus.COMPLETE
+    assert updated_job.attempt == 3
+    assets = context.services.assets.find_by("campaign_id", campaign.id)
+    assert len(assets) == 1
+
+
 def test_manual_worker_job_completion_rejects_empty_upload(client: TestClient) -> None:
     csrf = login(client)
     context: WebContext = client.app.state.context
