@@ -14,7 +14,7 @@ identity, tokens, cookies, or browser-profile content.
 | Android virtual device | No configured AVD | Real emulator capture is externally blocked |
 | Connected ADB device | None | Real device capture is unavailable |
 | FFmpeg / ffprobe 6.1.1 | Yes | Installed during sprint; canonical render integration can run |
-| Chromium | No | Live Flow browser automation is blocked |
+| Google Chrome 152 | Yes | Playwright launches; Flow generation controls require authenticated subscription access |
 | Caddy 2.11.4 / systemd | Yes | Deployment configuration can be validated |
 
 Host storage had approximately 28 GiB free (81% used) at discovery. AdForge must
@@ -39,3 +39,7 @@ executed the same bounded, no-tool request against their authenticated subscript
 CLIs. Both returned `{"status":"ok"}` conforming to the supplied JSON Schema. This
 proves CLI invocation, authentication, structured output, and adapter parsing; it
 does not claim that unrelated creative tasks or external media providers were tested.
+
+Playwright successfully launched the installed Google Chrome 152 binary and opened the
+Flow site. The public landing page did not expose generation controls, so the adapter
+correctly reports `LOGIN_REQUIRED`; no live generation is claimed.

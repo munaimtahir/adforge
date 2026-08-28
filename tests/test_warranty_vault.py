@@ -11,6 +11,7 @@ from adforge.bootstrap import ensure_warranty_vault_product
 from adforge.models import Campaign, CampaignState, TruthReadiness
 from adforge.services import Services
 from adforge.web import WebContext, create_app
+from adforge.worker import CampaignWorker
 
 
 def test_warranty_vault_seed_is_unknown_idempotent_and_claim_free(tmp_path: Path) -> None:
@@ -75,3 +76,15 @@ def test_handoff_and_readiness_documents_name_every_missing_input() -> None:
         assert required in handoff
     assert "NOT READY" in readiness
     assert "not claim evidence" in readiness
+
+
+def test_worker_also_refuses_unknown_product_truth(tmp_path: Path) -> None:
+    services = Services(tmp_path / "runtime", Path("schemas"))
+    services.initialize()
+    product = ensure_warranty_vault_product(services)
+    campaign = services.campaigns.save(
+        Campaign(product_id=product.id, name="Blocked", brief="Blocked acceptance")
+    )
+    result = CampaignWorker(services, {}).run(campaign.id)
+    assert result.state == CampaignState.CREATED
+    assert result.reason == "Product Truth is not READY"

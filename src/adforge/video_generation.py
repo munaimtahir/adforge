@@ -132,7 +132,12 @@ class PlaywrightFlowDriver:
         self.profile_path.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.profile_path, 0o700)
         self.flow_url = flow_url
-        self.chromium_executable = chromium_executable or shutil.which("chromium")
+        self.chromium_executable = (
+            chromium_executable
+            or shutil.which("chromium")
+            or shutil.which("google-chrome")
+            or shutil.which("google-chrome-stable")
+        )
         self.headless = headless
         self.prompt_selector = prompt_selector
         self.generate_selector = generate_selector
@@ -165,16 +170,23 @@ class PlaywrightFlowDriver:
                 login_required = "accounts.google" in page.url or page.get_by_text(
                     "Sign in", exact=False
                 ).count() > 0
+                generation_ready = (
+                    page.locator(self.prompt_selector).count() > 0
+                    and page.locator(self.generate_selector).count() > 0
+                )
                 context.close()
         except Exception as exc:
             return VideoGenerationHealth(
                 available=False, login_state="UNKNOWN", detail=str(exc)[:500]
             )
-        if login_required:
+        if login_required or not generation_ready:
             return VideoGenerationHealth(
                 available=False,
                 login_state="LOGIN_REQUIRED",
-                detail="Authenticate the configured persistent Flow profile",
+                detail=(
+                    "Authenticate a Flow-capable subscription in the configured "
+                    "persistent profile; the generation controls are unavailable"
+                ),
             )
         return VideoGenerationHealth(available=True, login_state="AUTHENTICATED")
 
@@ -200,6 +212,11 @@ class PlaywrightFlowDriver:
                 ).count() > 0:
                     raise FlowLoginRequired(
                         "Flow login required in the configured persistent browser profile"
+                    )
+                if page.locator(self.generate_selector).count() == 0:
+                    raise FlowLoginRequired(
+                        "Flow generation controls are unavailable; authenticate the "
+                        "persistent profile and verify subscription/region access"
                     )
                 constraints = ", ".join(scene.negative_constraints)
                 prompt = scene.prompt

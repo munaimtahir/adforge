@@ -78,6 +78,9 @@ def emulator_capability() -> Capability:
 
 
 def build_report() -> dict[str, object]:
+    chromium = command_capability("chromium", "--version")
+    if not chromium.available:
+        chromium = command_capability("google-chrome", "--version")
     capabilities = {
         "python": command_capability("python3", "--version"),
         "git": command_capability("git", "--version"),
@@ -85,7 +88,7 @@ def build_report() -> dict[str, object]:
         "npm": command_capability("npm", "--version"),
         "ffmpeg": command_capability("ffmpeg", "-version"),
         "ffprobe": command_capability("ffprobe", "-version"),
-        "chromium": command_capability("chromium", "--version"),
+        "chromium": chromium,
         "adb": adb_capability(),
         "emulator": emulator_capability(),
         "claude": command_capability("claude", "--version"),

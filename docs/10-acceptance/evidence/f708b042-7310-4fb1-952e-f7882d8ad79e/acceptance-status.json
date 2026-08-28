@@ -1,0 +1,18 @@
+{
+  "campaign_id": "f708b042-7310-4fb1-952e-f7882d8ad79e",
+  "attempted_at": "2026-08-28T00:00:00Z",
+  "product_id": "warranty-vault",
+  "product_truth_readiness": "UNKNOWN",
+  "campaign_state": "CREATED",
+  "active": false,
+  "campaign_create_http_status": 303,
+  "campaign_start_http_status": 409,
+  "final_mp4": null,
+  "verdict": "ADFORGE v1 — NOT READY",
+  "blocking_evidence": [
+    "authoritative Warranty Vault Product Truth absent",
+    "current Warranty Vault APK and brand assets absent",
+    "canonical emulator/device unavailable",
+    "authenticated Flow persistent profile unavailable"
+  ]
+}

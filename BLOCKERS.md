@@ -9,6 +9,6 @@ implementation and handoff contract work continues.
 |---|---|---|---|
 | B-001 | Authoritative Warranty Vault Product Truth, current APK, and brand assets are absent | Return every item in `docs/10-acceptance/WARRANTY_VAULT_HANDOFF_REQUEST.md`; AdForge must validate it and set the product to READY | Real Product Truth gate and Warranty Vault campaign |
 | B-002 | No Android AVD or connected device is configured | Configure one canonical emulator/device and prove install, reset, launch, capture, and pull against the supplied APK | Authentic app footage |
-| B-003 | Chromium is not installed and Flow login state is unavailable | Install supported Chromium/Playwright runtime and authenticate a persistent profile without committing it | Live Flow/Veo generation |
+| B-003 | Chrome/Playwright run, but the persistent profile lacks proven Flow generation access | Authenticate a Flow-capable subscription in the mode-0700 profile and pass a real generate/download/import smoke test | Live Flow/Veo generation |
 
 Claude Code and Codex CLI live structured adapter smoke tests passed on 2026-08-28.
