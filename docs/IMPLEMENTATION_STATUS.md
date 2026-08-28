@@ -4,9 +4,9 @@ Last updated: 2026-08-28 UTC.
 
 ## Current phase
 
-Phase 11 is complete. Configurable lenient QC enforces technical media, Product Truth,
-required assets, CTA/audio/duration/dimensions, persists reports, accepts advisories,
-and schedules dependency-targeted repair until a controlled budget stop.
+Phase 12 is complete. Startup recovery, metadata/filesystem backup/restore, non-pruning
+storage pressure, restrictive profile permissions, log redaction, bounded processes,
+and validated Caddy/systemd deployment artifacts are implemented and documented.
 
 ## Phase ledger
 
@@ -24,7 +24,8 @@ and schedules dependency-targeted repair until a controlled budget stop.
 | 9 — Audio production | Complete | Clone authorization, validation, timing, provenance, mix/peak tests |
 | 10 — Edit spec/FFmpeg renderer | Complete | Real MP4/ffprobe, profile, text, audio, invalid spec and injection tests |
 | 11 — QC and targeted repair | Complete | Broken media, claim, missing asset, advisory, targeted repair and budget tests |
-| 12–13 | Not started | Implementation pending |
+| 12 — Recovery/operations/security | Complete | Restart, backup, storage, redaction, permissions and deployment validation tests |
+| 13 | Not started | Warranty Vault readiness pending |
 | 14 — End-to-end acceptance | Blocked externally | Warranty Vault truth/APK/assets, emulator, Flow, and FFmpeg evidence unavailable |
 | 15 — Release audit | Not started | Pending implementation |
 

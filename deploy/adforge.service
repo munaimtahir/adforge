@@ -1,0 +1,25 @@
+[Unit]
+Description=AdForge production control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=adforge
+Group=adforge
+WorkingDirectory=/opt/adforge/app
+EnvironmentFile=/opt/adforge/config/adforge.env
+UMask=0077
+ExecStart=/usr/bin/env /opt/adforge/venv/bin/uvicorn adforge.web:create_app --factory --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/adforge/data /opt/adforge/products /opt/adforge/campaigns /opt/adforge/assets /opt/adforge/exports /opt/adforge/browser-profiles /opt/adforge/logs /opt/adforge/backups /opt/adforge/temp
+
+[Install]
+WantedBy=multi-user.target

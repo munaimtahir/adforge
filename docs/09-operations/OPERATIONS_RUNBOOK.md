@@ -26,3 +26,20 @@ Do not prune automatically. Report usage and request explicit cleanup approval.
 
 ## Restart
 On service restart, recover durable state and identify the single active campaign. Resume idempotently.
+
+Implemented startup recovery converts interrupted `RUNNING` tasks back to `PENDING`
+when attempts remain, preserves completed tasks, and reports the durable active lease.
+
+## Commands
+
+```bash
+python3 scripts/environment_doctor.py
+sudo systemctl restart adforge
+sudo journalctl -u adforge --since today
+caddy validate --config deploy/Caddyfile
+```
+
+Metadata backups use SQLite's online backup API and archive product/campaign/export
+records without secrets, logs, temp files, or browser profiles. Restore is allowed
+only into an empty target and rejects unsafe archive paths. Storage reporting never
+deletes data; cleanup always requires explicit owner confirmation.
