@@ -9,6 +9,7 @@ separate from the owner's browser session.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Any
@@ -18,6 +19,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from adforge.models import (
+    Campaign,
     CampaignState,
     LedgerEvent,
     WorkerArtifact,
@@ -70,11 +72,16 @@ class WorkerJobService:
         *,
         lease_seconds: int = DEFAULT_LEASE_SECONDS,
         heartbeat_timeout_seconds: int = DEFAULT_HEARTBEAT_TIMEOUT_SECONDS,
+        artifact_importers: dict[str, Callable[[Services, Campaign, WorkerJob], None]]
+        | None = None,
+        on_campaign_resumed: Callable[[str], Any] | None = None,
     ) -> None:
         self.services = services
         self.lease_seconds = lease_seconds
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
         self.orchestrator = Orchestrator(services)
+        self.artifact_importers = artifact_importers or {}
+        self.on_campaign_resumed = on_campaign_resumed
 
     def heartbeat(
         self,
@@ -350,8 +357,23 @@ class WorkerJobService:
 
     def _resume_campaign_if_waiting(self, job: WorkerJob) -> None:
         campaign = self.services.campaigns.get(job.campaign_id)
-        if campaign is not None and campaign.state == CampaignState.WAITING_FOR_WORKER:
-            self.orchestrator.resume(campaign.id)
+        if campaign is None or campaign.state != CampaignState.WAITING_FOR_WORKER:
+            return
+        importer = self.artifact_importers.get(job.capability)
+        if importer is not None:
+            try:
+                importer(self.services, campaign, job)
+            except Exception as exc:  # noqa: BLE001 - a bad import must not resume/crash
+                self._ledger(
+                    job,
+                    "worker_artifact_import_failed",
+                    "WAITING_FOR_WORKER",
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
+                return
+        resumed = self.orchestrator.resume(campaign.id)
+        if self.on_campaign_resumed is not None:
+            self.on_campaign_resumed(resumed.id)
 
     def _append_attempt(
         self,

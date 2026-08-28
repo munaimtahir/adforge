@@ -17,8 +17,14 @@ from adforge.models import Campaign, CampaignState, TaskState, TruthReadiness, W
 from adforge.orchestrator import ActiveCampaignError, Orchestrator, TransitionError
 from adforge.services import Services
 from adforge.storage import UnsafePathError
+from adforge.worker import CampaignWorker
 from adforge.worker_api import WorkerJobService, build_worker_router
 from adforge.worker_auth import issue_token
+from adforge.worker_stages import (
+    WORKER_ARTIFACT_IMPORTERS,
+    build_app_capture_handler,
+    build_flow_generation_handler,
+)
 
 SESSION_COOKIE = "adforge_session"
 
@@ -41,6 +47,17 @@ class WebContext:
         self.secure_cookie = secure_cookie
         self.orchestrator = Orchestrator(services)
         self.worker_jobs = WorkerJobService(services)
+        self.campaign_worker = CampaignWorker(
+            services,
+            {
+                CampaignState.APP_CAPTURE: build_app_capture_handler(services, self.worker_jobs),
+                CampaignState.ASSET_GENERATION: build_flow_generation_handler(
+                    services, self.worker_jobs
+                ),
+            },
+        )
+        self.worker_jobs.artifact_importers = WORKER_ARTIFACT_IMPORTERS
+        self.worker_jobs.on_campaign_resumed = self.campaign_worker.run
 
 
 def create_app(
