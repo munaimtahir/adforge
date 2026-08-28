@@ -4,9 +4,9 @@ Last updated: 2026-08-28 UTC.
 
 ## Current phase
 
-Phase 8 is independently complete. APK ingestion preserves and checksums the original,
-AAPT metadata inspection and constrained ADB operations are implemented, and the
-fictional-data-only emulator handoff validates exact returns and resumes campaigns.
+Phase 9 is complete. Replaceable voice/music contracts, explicit voice-clone
+authorization, original local test fallbacks for voice/music/SFX, timing/provenance,
+WAV validation, loudness/peak analysis, ducking, and non-clipping mixing are present.
 
 ## Phase ledger
 
@@ -21,7 +21,8 @@ fictional-data-only emulator handoff validates exact returns and resumes campaig
 | 6 — Creative production pipeline | Complete | Role schema, claim, timing, dependency, routing and version tests |
 | 7 — Flow/video generation + handoff | Complete except live external smoke | Adapter and fixture handoff round-trip tests; Chromium/login blocker recorded |
 | 8 — Android/APK/emulator + handoff | Complete except live external smoke | APK, parser, safety, fictional data, manifest and fixture round-trip tests |
-| 9–13 | Not started | Implementation pending |
+| 9 — Audio production | Complete | Clone authorization, validation, timing, provenance, mix/peak tests |
+| 10–13 | Not started | Implementation pending |
 | 14 — End-to-end acceptance | Blocked externally | Warranty Vault truth/APK/assets, emulator, Flow, and FFmpeg evidence unavailable |
 | 15 — Release audit | Not started | Pending implementation |
 

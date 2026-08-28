@@ -13,7 +13,7 @@ identity, tokens, cookies, or browser-profile content.
 | Android SDK, ADB, emulator binary | Yes | Adapter commands can be exercised |
 | Android virtual device | No configured AVD | Real emulator capture is externally blocked |
 | Connected ADB device | None | Real device capture is unavailable |
-| FFmpeg / ffprobe | No | Canonical render integration is blocked until installed |
+| FFmpeg / ffprobe 6.1.1 | Yes | Installed during sprint; canonical render integration can run |
 | Chromium | No | Live Flow browser automation is blocked |
 | Caddy 2.11.4 / systemd | Yes | Deployment configuration can be validated |
 
