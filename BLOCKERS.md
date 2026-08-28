@@ -156,3 +156,58 @@ subscription-first architecture:
   cgroup-based session teardown. Enabled lingering and started `user@997.service`
   explicitly; this is what let the long-running interactive login sessions (and will
   let any future durable background job for this account) actually persist.
+
+## Real DemoTask acceptance campaign (2026-08-29): bugs found and fixed live
+
+With B-007 and B-003 both resolved this session, we ran the first real
+production campaign against genuine Claude/Codex/Flow/Android through the
+actual authenticated web app (campaign `a0d5338a-4535-4279-9aff-2746593d5add`,
+product `demotask`). This immediately found and fixed real internal
+implementation gaps that no test suite had caught, because nothing had ever
+driven a real campaign through the live app before:
+
+1. **`APKIngestor` had zero callers.** It was fully implemented and unit-tested
+   (`tests/test_android.py`) but `create_campaign` only recorded `apk_path` as
+   metadata — it never actually copied the APK into the campaign workspace or
+   wrote `apk-metadata.json`. Any real campaign would have silently been unable
+   to reach `APP_CAPTURE`. Fixed in `src/adforge/web.py` (commit `6f21165`).
+2. **`ADFORGE_IMPORT_ROOT` was declared but never read.** `.env.example` and
+   `DEPLOYMENT.md` document it; `create_app()` only ever consulted its
+   `import_root` parameter (always `None` in the real systemd invocation) and
+   fell back to `{ADFORGE_DATA_ROOT}/imports` instead. Every real APK-backed
+   campaign creation at the documented path failed with "APK path is outside
+   the import root". Fixed (commit `5d9f769`). **Not yet fixed, same class of
+   bug, lower priority:** `ADFORGE_BROWSER_PROFILE_ROOT` and
+   `ADFORGE_CLI_TIMEOUT_SECONDS` are also declared but never read anywhere in
+   `src/adforge` — see that commit message for why those need a real design
+   decision rather than a one-line fix.
+3. **There was no way to register any product except the hardcoded
+   `warranty-vault`.** Added `scripts/provision_product.py` (administrative,
+   commit `c9eac59`) and, since the user asked for it directly, a real
+   `GET/POST /products/new` UI (commit `00d9917`) that pastes Product Truth
+   JSON and imports it through the same `ProductTruthService` the rest of the
+   app uses.
+4. **Claim-discipline prompting gap.** The real `STRATEGY` stage exhausted its
+   3-attempt budget live: Claude kept paraphrasing an approved feature ("Lets
+   you add a task to a list" vs. the exact "Lets you add a task to a fictional
+   list") and `ProductTruthService.validate_claim`'s exact-match gate correctly
+   rejected it every time — that gate is the actual safety boundary and was not
+   weakened. Fixed by telling every claim-producing AI role explicitly to copy
+   claims verbatim or omit them (commit `e494715`).
+5. **`/tasks/{id}/retry` is disconnected from `CampaignWorker`.** Discovered
+   while recovering from finding 4: retrying an exhausted task creates a new
+   `CampaignTask` row with an idempotency key like
+   `stage:strategy:v1:manual-retry:4`, but `CampaignWorker.run()` only ever
+   looks up (and creates, if missing) the task at its own deterministic key
+   (`stage:{state}:v{transition_count}`) — it has no way to discover a
+   manually-retried task at a different key. The route appears to predate
+   `CampaignWorker` (phase 4 vs. phase 16-18) and is very likely simply dead
+   for any `CampaignWorker`-driven stage today. Worked around for this run by
+   resetting the existing task's `attempt`/`state` directly (administrative,
+   not a code change); **not yet fixed** — a real fix means either making
+   `CampaignWorker` discover retried tasks by `task_type`, or having
+   `retry_task` reset the existing task in place instead of creating a new row.
+
+None of these are Product Truth safety regressions — the claim gate, in
+particular, did exactly its job. They are real gaps in wiring that only a
+genuine, non-fixture campaign run through the actual application would surface.
