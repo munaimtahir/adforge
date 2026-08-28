@@ -1,0 +1,61 @@
+{
+  "product_id": "demotask",
+  "product_name": "DemoTask",
+  "package_id": "pk.fictional.demotask",
+  "current_version": "1.0.0-fictional",
+  "description": "DemoTask is a wholly fictional, synthetic productivity/task-list Android app authored solely for AdForge platform acceptance testing. It has no real users, no App Store listing, and no connection to any real company or product. It exists only to prove AdForge can run one complete autonomous campaign end to end.",
+  "approved_features": [
+    "Lets you add a task to a fictional list",
+    "Lets you mark a fictional task complete",
+    "Organizes fictional tasks into lists"
+  ],
+  "prohibited_claims": [
+    "Guarantees you will never miss a deadline",
+    "Syncs across devices",
+    "Available on iOS",
+    "Used by real customers",
+    "Collects or stores any real personal data"
+  ],
+  "known_limitations": [
+    "Single-device only; no account system",
+    "All data is synthetic and does not persist between fresh installs",
+    "Not published to any app store"
+  ],
+  "privacy_claims": [
+    "Collects no real personal data because it is a synthetic test app with no backend"
+  ],
+  "audiences": [
+    "Busy professionals (fictional persona, for creative-copy purposes only)"
+  ],
+  "apk_locations": [
+    "app-capture/source.apk"
+  ],
+  "demo_workflows": [
+    {
+      "name": "Add a fictional task",
+      "steps": "Open the app, tap Add, enter a fictional task name, save."
+    },
+    {
+      "name": "Mark a fictional task complete",
+      "steps": "Tap the checkbox next to an existing fictional task."
+    }
+  ],
+  "evidence": [
+    {
+      "claim": "Lets you add a task to a fictional list",
+      "status": "CURRENT",
+      "source": "APK UI walkthrough, DemoTask v1.0.0-fictional"
+    },
+    {
+      "claim": "Lets you mark a fictional task complete",
+      "status": "CURRENT",
+      "source": "APK UI walkthrough, DemoTask v1.0.0-fictional"
+    },
+    {
+      "claim": "Organizes fictional tasks into lists",
+      "status": "CURRENT",
+      "source": "APK UI walkthrough, DemoTask v1.0.0-fictional"
+    }
+  ],
+  "last_verified_at": "2026-08-29T00:00:00Z"
+}
