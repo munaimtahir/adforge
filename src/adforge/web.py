@@ -12,9 +12,25 @@ from fastapi.templating import Jinja2Templates
 
 from adforge.auth import SessionSigner, verify_password
 from adforge.bootstrap import ensure_warranty_vault_product
+from adforge.campaign_stages import (
+    build_asset_plan_handler,
+    build_audio_production_handler,
+    build_draft_render_handler,
+    build_edit_plan_handler,
+    build_export_handler,
+    build_final_render_handler,
+    build_product_truth_validation_handler,
+    build_qc_handler,
+    build_repair_handler,
+    build_script_handler,
+    build_storyboard_handler,
+    build_strategy_handler,
+)
 from adforge.health import collect_capabilities, platform_status
 from adforge.models import Campaign, CampaignState, TaskState, TruthReadiness, WorkerNode
 from adforge.orchestrator import ActiveCampaignError, Orchestrator, TransitionError
+from adforge.providers import ClaudeCodeProvider, CodexCLIProvider, ProviderRouter
+from adforge.renderer import FFmpegRenderer
 from adforge.services import Services
 from adforge.storage import UnsafePathError
 from adforge.worker import CampaignWorker
@@ -47,13 +63,32 @@ class WebContext:
         self.secure_cookie = secure_cookie
         self.orchestrator = Orchestrator(services)
         self.worker_jobs = WorkerJobService(services)
+        provider_workspace = services.storage.root / "temp" / "provider-workspace"
+        self.provider_router = ProviderRouter(
+            [ClaudeCodeProvider(provider_workspace), CodexCLIProvider(provider_workspace)]
+        )
+        self.renderer = FFmpegRenderer()
         self.campaign_worker = CampaignWorker(
             services,
             {
-                CampaignState.APP_CAPTURE: build_app_capture_handler(services, self.worker_jobs),
+                CampaignState.PRODUCT_TRUTH_VALIDATION: build_product_truth_validation_handler(
+                    services
+                ),
+                CampaignState.STRATEGY: build_strategy_handler(services, self.provider_router),
+                CampaignState.SCRIPT: build_script_handler(services, self.provider_router),
+                CampaignState.STORYBOARD: build_storyboard_handler(services, self.provider_router),
+                CampaignState.ASSET_PLAN: build_asset_plan_handler(services, self.provider_router),
                 CampaignState.ASSET_GENERATION: build_flow_generation_handler(
                     services, self.worker_jobs
                 ),
+                CampaignState.APP_CAPTURE: build_app_capture_handler(services, self.worker_jobs),
+                CampaignState.AUDIO_PRODUCTION: build_audio_production_handler(services),
+                CampaignState.EDIT_PLAN: build_edit_plan_handler(services, self.renderer),
+                CampaignState.DRAFT_RENDER: build_draft_render_handler(services, self.renderer),
+                CampaignState.QC: build_qc_handler(services, self.renderer),
+                CampaignState.REPAIR: build_repair_handler(services, self.renderer),
+                CampaignState.FINAL_RENDER: build_final_render_handler(services, self.renderer),
+                CampaignState.EXPORT: build_export_handler(services),
             },
         )
         self.worker_jobs.artifact_importers = WORKER_ARTIFACT_IMPORTERS
@@ -261,6 +296,7 @@ def create_app(
             )
         except ActiveCampaignError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        context.campaign_worker.run(campaign_id)
         return RedirectResponse(
             f"/campaigns/{campaign_id}", status_code=status.HTTP_303_SEE_OTHER
         )
@@ -274,6 +310,7 @@ def create_app(
             context.orchestrator.resume(campaign_id)
         except (TransitionError, ActiveCampaignError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        context.campaign_worker.run(campaign_id)
         return RedirectResponse(
             f"/campaigns/{campaign_id}", status_code=status.HTTP_303_SEE_OTHER
         )

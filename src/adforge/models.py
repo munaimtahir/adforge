@@ -80,6 +80,7 @@ class Campaign(Record):
     product_id: str
     name: str = Field(min_length=1)
     brief: str = Field(min_length=1)
+    target_duration_seconds: float = Field(default=15, gt=0, le=60)
     state: CampaignState = CampaignState.CREATED
     truth_snapshot_id: str | None = None
     active: bool = False
