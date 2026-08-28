@@ -27,7 +27,7 @@ Truth/APK and live Flow/emulator prerequisites are absent. No final MP4 was prod
 | 12 — Recovery/operations/security | Complete | Restart, backup, storage, redaction, permissions and deployment validation tests |
 | 13 — Warranty Vault readiness | Complete except real handoff | Claim-free seed, paths, request/report, and READY start-gate tests |
 | 14 — End-to-end acceptance | Strongest path complete; real acceptance blocked | Real web attempt plus UI screenshot; fixture worker/restart/handoff/repair/render evidence; Warranty Vault truth/APK, emulator, and Flow access absent |
-| 15 — Release audit | Complete | Tests/lint/types/schemas/config/deploy/secret scan and release documents; commit `FINAL_COMMIT_PENDING` |
+| 15 — Release audit | Complete | Tests/lint/types/schemas/config/deploy/secret scan and release documents; commit `80da668` |
 
 ## Phase commits
 
@@ -48,7 +48,7 @@ Truth/APK and live Flow/emulator prerequisites are absent. No final MP4 was prod
 | 12 | `d569a7a` |
 | 13 | `621169e` |
 | 14 | `f848e9b` |
-| 15 | `FINAL_COMMIT_PENDING` |
+| 15 | `80da668` |
 
 ## Baseline quality commands
 
