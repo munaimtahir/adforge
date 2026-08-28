@@ -433,6 +433,30 @@ def _playwright_available() -> bool:
     return True
 
 
+FLOW_CTA_TEXT = "Create with Google Flow"
+
+
+def _navigate_to_flow_app(page: Any) -> None:
+    """From the labs.google marketing page, click through to the real tool.
+
+    `FLOW_URL` (https://labs.google/fx/tools/flow) is Flow's public marketing/
+    landing page, not the generation tool itself -- it never shows "Sign in" text
+    or an accounts.google URL even when this profile has no real Flow access,
+    which previously made both `flow_health()` and `cmd_flow_login()` falsely
+    report READY/signed-in off that page alone. The primary CTA on that page is
+    what actually triggers Google's OAuth flow for the tool (landing on
+    accounts.google.com if unauthenticated, or the real authenticated app if
+    not) -- that resulting page, not the marketing page, is what reflects real
+    login status.
+    """
+    page.goto(FLOW_URL, wait_until="domcontentloaded", timeout=30_000)
+    page.wait_for_timeout(1500)
+    cta = page.get_by_text(FLOW_CTA_TEXT, exact=False)
+    if cta.count() > 0:
+        cta.first.click(timeout=10_000)
+        page.wait_for_timeout(3000)
+
+
 def flow_health(profile_path: Path, executable: str) -> dict[str, Any]:
     from playwright.sync_api import sync_playwright
 
@@ -442,11 +466,8 @@ def flow_health(profile_path: Path, executable: str) -> dict[str, Any]:
                 str(profile_path), executable_path=executable, headless=True
             )
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto(FLOW_URL, wait_until="domcontentloaded", timeout=30_000)
-            login_required = (
-                "accounts.google" in page.url
-                or page.get_by_text("Sign in", exact=False).count() > 0
-            )
+            _navigate_to_flow_app(page)
+            login_required = "accounts.google" in page.url
             context.close()
     except Exception as exc:  # noqa: BLE001 - health probe must never raise
         return {"status": "BROWSER_UNAVAILABLE", "detail": str(exc)[:500]}
@@ -455,8 +476,18 @@ def flow_health(profile_path: Path, executable: str) -> dict[str, Any]:
     return {"status": "READY", "detail": None}
 
 
+FLOW_LOGIN_POLL_SECONDS = 3
+FLOW_LOGIN_TIMEOUT_SECONDS = 1200
+
+
 def cmd_flow_login(_: argparse.Namespace) -> int:
-    """Open a real, visible browser window for one-time interactive Flow sign-in."""
+    """Open a real, visible browser window for one-time interactive Flow sign-in.
+
+    Waits by polling the page for a signed-in state rather than blocking on
+    `input()`: some invocation contexts (e.g. driven through another tool, or a
+    non-interactive shell) close stdin immediately, which previously raised
+    EOFError and tore the browser down before the user had any chance to sign in.
+    """
     if not _playwright_available():
         print("Playwright is not installed: pip install playwright && playwright install chromium")
         return 1
@@ -467,16 +498,33 @@ def cmd_flow_login(_: argparse.Namespace) -> int:
     from playwright.sync_api import sync_playwright
 
     FLOW_PROFILE_PATH.mkdir(parents=True, exist_ok=True)
-    print("Opening a visible browser window. Sign in to Flow, then close the window.")
+    print("Opening a visible browser window. Sign in to Flow in it.")
+    print(
+        f"Waiting up to {FLOW_LOGIN_TIMEOUT_SECONDS // 60} minutes for sign-in to "
+        "complete; this closes automatically once detected."
+    )
+    signed_in = False
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
             str(FLOW_PROFILE_PATH), executable_path=executable, headless=False
         )
         page = context.pages[0] if context.pages else context.new_page()
-        page.goto(FLOW_URL, wait_until="domcontentloaded")
-        input("Press Enter here once you have finished signing in and the page is ready...")
+        _navigate_to_flow_app(page)
+        deadline = time.monotonic() + FLOW_LOGIN_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            time.sleep(FLOW_LOGIN_POLL_SECONDS)
+            try:
+                login_required = "accounts.google" in page.url
+            except Exception:  # noqa: BLE001, S112 - a transient navigation must not abort the poll
+                continue
+            if not login_required:
+                signed_in = True
+                break
         context.close()
-    print(f"Profile saved to {FLOW_PROFILE_PATH} (mode restricted to the current user).")
+    if not signed_in:
+        print("Timed out waiting for sign-in. Run this command again once you're ready.")
+        return 1
+    print(f"Signed in. Profile saved to {FLOW_PROFILE_PATH} (mode restricted to the current user).")
     return 0
 
 
@@ -512,8 +560,17 @@ def run_flow_generation(client: AgentClient, job: dict[str, Any], workdir: Path)
             )
             try:
                 page = context.pages[0] if context.pages else context.new_page()
-                page.goto(FLOW_URL, wait_until="domcontentloaded", timeout=30_000)
-                page.locator("textarea").first.fill(prompt)
+                _navigate_to_flow_app(page)
+                if "accounts.google" in page.url:
+                    raise RuntimeError(  # noqa: TRY301
+                        "Flow login required in the configured persistent browser profile"
+                    )
+                # NOTE: real generation-page selectors are still unverified against
+                # the actual authenticated tool -- see docs/BLOCKERS.md B-003/B-006.
+                # `:not([name="g-recaptcha-response"])` is a known-necessary exclusion
+                # (that hidden field was the prior failure mode), not a confirmed match
+                # for the real prompt box.
+                page.locator('textarea:not([name="g-recaptcha-response"])').first.fill(prompt)
                 page.locator('button:has-text("Generate")').first.click()
                 with page.expect_download(timeout=600_000) as download_info:
                     page.locator('button:has-text("Download")').first.click(timeout=600_000)

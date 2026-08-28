@@ -124,7 +124,12 @@ class PlaywrightFlowDriver:
         flow_url: str = "https://labs.google/fx/tools/flow",
         chromium_executable: str | None = None,
         headless: bool = True,
-        prompt_selector: str = "textarea",
+        # NOTE: real generation-page selectors are still unverified against the
+        # actual authenticated tool -- see docs/BLOCKERS.md B-003/B-006. Excluding
+        # the recaptcha field is a known-necessary fix (a live production attempt
+        # timed out filling it as the "prompt"); it is not a confirmed match for
+        # the real prompt box.
+        prompt_selector: str = 'textarea:not([name="g-recaptcha-response"])',
         generate_selector: str = 'button:has-text("Generate")',
         download_selector: str = 'button:has-text("Download")',
     ) -> None:
@@ -150,6 +155,25 @@ class PlaywrightFlowDriver:
             raise VideoGenerationError("Playwright is not installed") from exc
         return sync_playwright
 
+    def _navigate(self, page: Any) -> None:
+        """From the labs.google marketing page, click through to the real tool.
+
+        `flow_url` defaults to Flow's public marketing/landing page, not the
+        generation tool itself -- it never shows "Sign in" text or an
+        accounts.google URL even with zero real Flow access on this profile,
+        which previously let both `health()` and `generate()` proceed as if
+        authenticated when they were not. The primary CTA on that page is what
+        actually triggers Google's OAuth flow for the tool; that resulting page
+        (accounts.google.com if unauthenticated, the real app if not) is what
+        reflects real login status, not the marketing page.
+        """
+        page.goto(self.flow_url, wait_until="domcontentloaded", timeout=30_000)
+        page.wait_for_timeout(1500)
+        cta = page.get_by_text("Create with Google Flow", exact=False)
+        if cta.count() > 0:
+            cta.first.click(timeout=10_000)
+            page.wait_for_timeout(3000)
+
     def health(self) -> VideoGenerationHealth:
         if self.chromium_executable is None:
             return VideoGenerationHealth(
@@ -166,10 +190,8 @@ class PlaywrightFlowDriver:
                     headless=self.headless,
                 )
                 page = context.pages[0] if context.pages else context.new_page()
-                page.goto(self.flow_url, wait_until="domcontentloaded", timeout=30_000)
-                login_required = "accounts.google" in page.url or page.get_by_text(
-                    "Sign in", exact=False
-                ).count() > 0
+                self._navigate(page)
+                login_required = "accounts.google" in page.url
                 generation_ready = (
                     page.locator(self.prompt_selector).count() > 0
                     and page.locator(self.generate_selector).count() > 0
@@ -206,10 +228,8 @@ class PlaywrightFlowDriver:
             )
             try:
                 page = context.pages[0] if context.pages else context.new_page()
-                page.goto(self.flow_url, wait_until="domcontentloaded", timeout=30_000)
-                if "accounts.google" in page.url or page.get_by_text(
-                    "Sign in", exact=False
-                ).count() > 0:
+                self._navigate(page)
+                if "accounts.google" in page.url:
                     raise FlowLoginRequired(
                         "Flow login required in the configured persistent browser profile"
                     )
