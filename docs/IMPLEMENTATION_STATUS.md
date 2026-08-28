@@ -22,16 +22,22 @@ proves the full wired pipeline end to end with real FFmpeg/audio/QC and a script
 recovery, producing an actual playable 1080×1920 MP4 — see its own module docstring.
 Commit `bb80b31`.
 
+**Update, same session:** B-007 is now fully resolved (both Claude and Codex
+authenticated for real on production; platform verdict `PLATFORM_READY`, first time
+ever) and B-003 (Flow login) is resolved on this local external worker. Phase 19
+(commits `bb80b31`, `487b51f`, `c1706d1`) is deployed to production: backed up
+(`/opt/adforge/backups/pre-phase19-20260828-205000.tar.gz`), synced, reinstalled into
+`/opt/adforge/venv`, scratch-port smoke-tested (`HTTP_200` against a throwaway data
+root), service restarted cleanly, public HTTPS verified (`HTTP_200`). See
+`docs/BLOCKERS.md` for full evidence. Deployed commit: `c1706d1`.
+
 Release verdict remains **ADFORGE v1 — NOT READY** for the canonical Warranty Vault
-campaign specifically (B-001: Product Truth/APK/brand assets absent; B-003/B-006: Flow
-authentication needs one human interactive login). The distributed worker subsystem
-itself is genuinely proven end to end against production (B-002/B-004/B-005 resolved;
-B-007 installation/PATH fixed, interactive login now in progress as of this session —
-see `docs/BLOCKERS.md`). No final Warranty Vault MP4 was produced. Phase 19 is
-implemented and locally tested but **not yet deployed to production and not yet
-exercised as a real end-to-end campaign against genuine Claude/Codex/Flow/Android** —
-that real-acceptance run is the next step, pending the in-progress production
-Claude/Codex logins and local Flow login (this session).
+campaign specifically (B-001: Product Truth/APK/brand assets still absent — this is
+independent of everything above and requires real Warranty Vault data, not a
+technical blocker). No final Warranty Vault MP4 was produced. The real end-to-end
+synthetic (DemoTask) acceptance campaign against genuine Claude/Codex/Flow/Android —
+proving the newly-deployed handlers work for real, not just in tests — is in progress
+as the next step.
 
 ## Phase ledger
 
