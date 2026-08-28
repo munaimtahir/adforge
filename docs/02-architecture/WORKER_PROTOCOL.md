@@ -24,6 +24,7 @@ for what still requires a real second machine.
 | `POST /heartbeat` | Report liveness, `agent_version`/`os`/`architecture`, capabilities, and safe metadata. Also doubles as first-contact registration — a worker's `WorkerNode` row is created by the owner from Settings → Workers before the agent ever calls this. |
 | `POST /jobs/claim` | Atomically claim one `PENDING` job whose capability the worker reports (`BEGIN IMMEDIATE`, same pattern as `Orchestrator.acquire_lease`). Returns `{"job": null}` when nothing matches. |
 | `POST /jobs/{id}/lease` | Renew the lease; rejected (409) if the caller doesn't hold it. |
+| `GET /jobs/{id}/inputs/{filename}` | Fetch a job input (e.g. the APK to install for `android_capture`) — only the filename the job payload declared (`apk_filename`), only for the current lease holder. |
 | `POST /jobs/{id}/progress` | Optional free-text status; does not renew the lease. |
 | `POST /jobs/{id}/artifacts` | Multipart upload; server recomputes the sha256 and rejects a mismatch; stored under the campaign workspace. |
 | `POST /jobs/{id}/complete` | Idempotent — repeating on an already-`COMPLETE` job is a no-op. Resumes a `WAITING_FOR_WORKER` campaign. |
@@ -53,14 +54,44 @@ the protocol does not need to change to add those handlers later.
 
 ## What's proven vs. what's still external
 
-Proven in this repository, including over real HTTP against a running server (see
-`docs/IMPLEMENTATION_STATUS.md` Phase 16 evidence): registration via heartbeat,
-capability matching, exclusive lease under concurrent claim, lease renewal and
-expiry/reclaim, checksum-validated artifact upload, idempotent completion, 3-attempt
+Proven in this repository, including over real HTTP against a running server, and
+against the live production endpoint `https://adforge.vexel.pk` itself (see
+`docs/TEST_AND_RUNTIME_EVIDENCE.md`): registration via heartbeat, capability matching,
+exclusive lease under concurrent claim, lease renewal and expiry/reclaim,
+checksum-validated artifact upload, idempotent completion, 3-attempt
 retry/classification, offline-worker heartbeat timeout, cross-worker access
-rejection, service-restart persistence, and `WAITING_FOR_WORKER` auto-resume.
+rejection, service-restart persistence, `WAITING_FOR_WORKER` auto-resume, and
+lease-gated job-input download.
 
 Not proven here, and not fakeable: a real external machine actually connecting over
 the internet, a real Android emulator/device capture, and a real authenticated Flow
 generation, run through a worker. These remain external blockers (BLOCKERS.md
 B-004–B-006) exactly like the existing product/emulator/Flow blockers B-001–B-003.
+The `android_capture` and `flow_generation` handlers in `scripts/worker_agent.py` are
+real, argument-array-only implementations (not stubs) as of phase 17, but neither has
+run against real hardware/a real authenticated session.
+
+## Android capture job contract
+
+`WorkerJob.payload` for an `android_capture` job:
+
+```json
+{
+  "package_id": "com.example.app",
+  "apk_relative_path": "app-capture/source.apk",
+  "apk_filename": "source.apk",
+  "apk_sha256": "<64 hex chars>"
+}
+```
+
+The worker downloads the APK via `GET /jobs/{id}/inputs/{apk_filename}`, verifies the
+checksum before installing, and uploads `screenshot.png`, `recording.mp4`,
+`device.json`, `capture.json`, `adb.log`, and `checksums.json` as separate artifacts
+via the existing generic artifact-upload endpoint — no server-side schema change was
+needed for the artifacts themselves, only for fetching the input.
+
+## Flow generation job contract
+
+`WorkerJob.payload` for a `flow_generation` job: `{"prompt": "...", "output_filename":
+"generated.mp4"}`. The worker uploads the generated file plus a `provenance.json`
+(prompt, timestamp, checksum) as artifacts.

@@ -4,10 +4,11 @@ Last updated: 2026-08-28 UTC.
 
 ## Current phase
 
-Phase 16 (distributed worker foundation) is complete and independently proven with a
-real HTTP round trip. Release verdict remains **ADFORGE v1 — NOT READY** because the
-real Warranty Vault Product Truth/APK, live Flow/emulator prerequisites, and now a real
-external worker machine are absent (BLOCKERS.md B-001–B-006). No final MP4 was produced.
+Phase 17 (android_capture/flow_generation worker pipelines) is complete. Release verdict
+remains **ADFORGE v1 — NOT READY** because the real Warranty Vault Product Truth/APK,
+live Flow/emulator prerequisites, a real external worker machine, and now a production
+Claude/Codex CLI authentication gap are absent/open (BLOCKERS.md B-001–B-007). No final
+MP4 was produced.
 
 ## Phase ledger
 
@@ -30,6 +31,7 @@ external worker machine are absent (BLOCKERS.md B-001–B-006). No final MP4 was
 | 14 — End-to-end acceptance | Strongest path complete; real acceptance blocked | Real web attempt plus UI screenshot; fixture worker/restart/handoff/repair/render evidence; Warranty Vault truth/APK, emulator, and Flow access absent |
 | 15 — Release audit | Complete | Tests/lint/types/schemas/config/deploy/secret scan and release documents; commit `80da668` |
 | 16 — Distributed worker foundation | Complete; real external worker/Android/Flow acceptance blocked | Worker domain/auth/API/UI/agent, real capability health checks, synthetic `synthetic_echo` round trip proven via `tests/test_worker.py` and over real HTTP against a running dev server (register → heartbeat → claim → lease → checksum-validated artifact upload → idempotent complete → `WAITING_FOR_WORKER` auto-resume); see `docs/02-architecture/WORKER_PROTOCOL.md` |
+| 17 — Android/Flow worker pipelines | Implementation complete; real acceptance blocked (B-004/005/006) | `scripts/worker_agent.py` real Android SDK/AVD discovery + capture pipeline and real Flow login/generation pipeline (argument-array-only subprocess calls); server-side lease-gated `GET /api/worker/jobs/{id}/inputs/{filename}`; the `synthetic_echo` round trip additionally proven against live production `https://adforge.vexel.pk` over real public HTTPS; Android SDK discovery and Flow login-state detection verified for real (no mocks) against this VM's actual device-less SDK and the live Flow site; discovered and recorded new blocker B-007 (production Claude/Codex CLI not usable by the `adforge` service account) via the real-invocation health checks introduced in phase 16 |
 
 ## Phase commits
 

@@ -41,3 +41,12 @@ Agents may inspect and propose changes. Material changes to AdForge's production
 - An offline or unavailable worker degrades only the specific capability it provided
   (`android_capture`, `flow_generation`); it never flips the platform verdict to
   `PLATFORM_NOT_READY` on its own (`src/adforge/health.py`).
+- `GET /api/worker/jobs/{id}/inputs/{filename}` (added for the Android capture
+  pipeline, so a worker can fetch the APK to install) only serves a filename the job's
+  own payload declared (`apk_filename`), only to the worker currently holding that
+  job's lease, and only from within that job's campaign workspace — it cannot be used
+  to read an arbitrary campaign file or another job's input.
+- Android/emulator/browser subprocess commands built by the worker agent
+  (`scripts/worker_agent.py`) use argument arrays exclusively; package IDs and ADB
+  serials are validated against a fixed pattern before use, exactly as the VM-local
+  `ADBAdapter` already does.
