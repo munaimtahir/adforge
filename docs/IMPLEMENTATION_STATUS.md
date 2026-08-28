@@ -4,16 +4,18 @@ Last updated: 2026-08-28 UTC.
 
 ## Current phase
 
-Phase 0 discovery is complete: the repository began as a clean, documentation-only
-Dev Pack, authoritative files were inventoried, runtime prerequisites were probed,
-and a credential-safe environment doctor plus baseline quality commands were added.
+Phase 1 is complete. AdForge now has an installable Python application foundation,
+repeatable SQLite migrations, all required typed domain records and repositories,
+contained local storage, isolated campaign workspaces, SHA-256 utilities,
+schema-validated manifests, and a durable append-only/redacted production ledger.
 
 ## Phase ledger
 
 | Phase | Status | Evidence |
 |---|---|---|
 | 0 — Discovery/environment/baseline | Complete | Environment doctor, capability report, blockers, baseline test |
-| 1–13 | Not started | Implementation pending |
+| 1 — Application foundation/data model | Complete | Domain CRUD, migration, path, workspace, manifest, checksum, ledger tests |
+| 2–13 | Not started | Implementation pending |
 | 14 — End-to-end acceptance | Blocked externally | Warranty Vault truth/APK/assets, emulator, Flow, and FFmpeg evidence unavailable |
 | 15 — Release audit | Not started | Pending implementation |
 

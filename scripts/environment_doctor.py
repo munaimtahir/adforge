@@ -27,7 +27,7 @@ def command_capability(name: str, *version_args: str) -> Capability:
     version = None
     if version_args:
         try:
-            result = subprocess.run(
+            result = subprocess.run(  # noqa: S603 - executable resolved by shutil.which
                 [executable, *version_args],
                 capture_output=True,
                 check=False,
@@ -46,7 +46,7 @@ def adb_capability() -> Capability:
     if not base.available:
         return base
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603 - executable resolved by shutil.which
             [base.executable or "adb", "devices"],
             capture_output=True,
             check=False,
@@ -64,7 +64,7 @@ def emulator_capability() -> Capability:
     if not base.available:
         return base
     try:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603 - executable resolved by shutil.which
             [base.executable or "emulator", "-list-avds"],
             capture_output=True,
             check=False,
