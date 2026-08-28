@@ -4,9 +4,9 @@ Last updated: 2026-08-28 UTC.
 
 ## Current phase
 
-Phase 3 is complete. The software orchestrator durably enforces canonical campaign
-transitions, a single atomic active lease, pause/resume, dependency-aware idempotent
-tasks, initial plus two retries, restart recovery, and targeted repair tasks.
+Phase 4 is complete. The desktop-first FastAPI control plane provides authenticated,
+CSRF-protected dashboard, product, campaign, queue, detail/timeline, asset, ledger,
+output/download, and provider-health views with safe input-path handling.
 
 ## Phase ledger
 
@@ -16,7 +16,8 @@ tasks, initial plus two retries, restart recovery, and targeted repair tasks.
 | 1 — Application foundation/data model | Complete | Domain CRUD, migration, path, workspace, manifest, checksum, ledger tests |
 | 2 — Product Truth | Complete | Import, schema/evidence, immutable snapshot, claim and provenance tests |
 | 3 — State machine/orchestrator | Complete | Transition, retry, restart, lease, idempotency and repair tests |
-| 4–13 | Not started | Implementation pending |
+| 4 — Desktop web control plane | Complete | Route, auth, CSRF, campaign, lease UX, path and secret tests |
+| 5–13 | Not started | Implementation pending |
 | 14 — End-to-end acceptance | Blocked externally | Warranty Vault truth/APK/assets, emulator, Flow, and FFmpeg evidence unavailable |
 | 15 — Release audit | Not started | Pending implementation |
 

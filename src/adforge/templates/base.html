@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{% block title %}AdForge{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header><a class="brand" href="/">ADFORGE</a><nav>
+    <a href="/products">Products</a><a href="/campaigns">Queue</a>
+    <a href="/outputs">Outputs</a><a href="/settings">Settings</a>
+    {% if csrf %}<form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Sign out</button></form>{% endif %}
+  </nav></header>
+  <main>{% block content %}{% endblock %}</main>
+</body>
+</html>
