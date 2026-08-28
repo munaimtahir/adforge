@@ -96,12 +96,22 @@ def build_report() -> dict[str, object]:
         "caddy": command_capability("caddy", "version"),
     }
     required = ("python", "git")
+    runtime_root = os.environ.get("ADFORGE_DATA_ROOT", ".adforge-runtime")
+    config_warnings = []
+    if os.environ.get("ADFORGE_DB_PATH"):
+        config_warnings.append(
+            "ADFORGE_DB_PATH is set but unused: the database always lives at "
+            f"{runtime_root}/data/adforge.sqlite3 (derived from ADFORGE_DATA_ROOT). "
+            "Remove ADFORGE_DB_PATH from the environment file -- a backup script or "
+            "operator relying on it will target the wrong file."
+        )
     return {
         "platform": platform.platform(),
         "python_runtime": sys.version.split()[0],
         "capabilities": {name: asdict(value) for name, value in capabilities.items()},
         "required_ready": all(capabilities[name].available for name in required),
-        "runtime_root": os.environ.get("ADFORGE_DATA_ROOT", ".adforge-runtime"),
+        "runtime_root": runtime_root,
+        "config_warnings": config_warnings,
     }
 
 

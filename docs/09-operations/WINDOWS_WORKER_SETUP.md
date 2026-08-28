@@ -1,4 +1,12 @@
-# Windows Worker Setup (B-004/B-005/B-006)
+# Windows Worker Setup (historical; superseded by EXTERNAL_WORKER_SETUP.md)
+
+> **The worker protocol is cross-platform.** This document is preserved as the
+> historical record of the original Windows-specific plan, written before any real
+> external machine had connected. `adforge-linux-01`, a real Linux machine, is the
+> worker that actually achieved B-004/B-005 acceptance (2026-08-29) — see
+> `docs/09-operations/EXTERNAL_WORKER_SETUP.md` for the current, OS-agnostic setup
+> guide and `docs/BLOCKERS.md` for the real evidence. Nothing below is Windows-only in
+> practice; only the shell syntax and default paths differ per OS.
 
 This closes the one remaining piece of distributed-worker acceptance that cannot be
 automated from the VM: a real external machine actually connecting. Everything else

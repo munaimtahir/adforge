@@ -46,3 +46,16 @@ correctly received HTTP 409 on start because readiness is `UNKNOWN`. Evidence is
    manifest, ledger, QC report, and render spec under the acceptance evidence contract.
 
 Final Warranty Vault MP4 path: **not produced**.
+
+## Addendum (2026-08-29): distributed worker subsystem now independently proven
+
+This verdict is unchanged by, and independent of, the following: the campaign →
+`WorkerJob` orchestration gap (previously undocumented — `CampaignWorker` existed but
+was never wired into the live app) is now closed, a real second machine
+(`adforge-linux-01`) connected and completed real `android_capture` jobs end to end
+against production with server-side `ffprobe` validation, and the production Claude
+CLI PATH/installation gap is fixed (moving the platform health verdict from
+`PLATFORM_NOT_READY` to `PLATFORM_DEGRADED`). None of this substitutes for Warranty
+Vault acceptance specifically, which still requires B-001 (Product Truth/APK/brand
+assets) and B-003/B-006 (Flow authentication). See `docs/BLOCKERS.md` and
+`docs/TEST_AND_RUNTIME_EVIDENCE.md` for full evidence.
