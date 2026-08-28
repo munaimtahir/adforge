@@ -60,6 +60,19 @@ CANONICAL_RESOLUTION = "1080x1920"
 
 FLOW_URL = "https://labs.google/fx/tools/flow"
 
+# Gemini API (Veo) direct video generation -- a proper first-party API, preferred
+# over browser-automated Flow whenever GEMINI_API_KEY is configured. Browser
+# automation of Flow's sign-in is blocked by Google's own anti-automation
+# detection (verified live: "This browser or app may not be secure"), which is a
+# deliberate security control, not a bug to route around -- the API is the
+# correct path for automated use, not a workaround for it.
+VEO_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+VEO_MODEL = "veo-3.1-generate-preview"
+VEO_ALLOWED_DURATIONS = (4, 6, 8)
+VEO_ALLOWED_ASPECT_RATIOS = {"9:16", "16:9"}
+VEO_POLL_SECONDS = 10
+VEO_POLL_TIMEOUT_SECONDS = 600
+
 PACKAGE_ID_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+$")
 SERIAL_PATTERN = re.compile(r"^[A-Za-z0-9._:-]+$")
 FILENAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -528,6 +541,107 @@ def cmd_flow_login(_: argparse.Namespace) -> int:
     return 0
 
 
+def _veo_duration(requested: float) -> int:
+    """Round up to the nearest Veo-supported duration (4, 6, or 8 seconds)."""
+    for duration in VEO_ALLOWED_DURATIONS:
+        if requested <= duration:
+            return duration
+    return VEO_ALLOWED_DURATIONS[-1]
+
+
+def run_veo_generation(
+    client: AgentClient, job: dict[str, Any], workdir: Path, api_key: str
+) -> None:
+    job_id = job["id"]
+    payload = job.get("payload", {})
+    prompt = payload.get("prompt")
+    if not prompt:
+        client.fail(job_id, "NON_RETRYABLE", "job payload missing prompt")
+        return
+    aspect_ratio = payload.get("aspect_ratio", "9:16")
+    if aspect_ratio not in VEO_ALLOWED_ASPECT_RATIOS:
+        client.fail(job_id, "NON_RETRYABLE", f"Veo does not support aspect ratio {aspect_ratio!r}")
+        return
+    duration = _veo_duration(float(payload.get("duration_seconds", VEO_ALLOWED_DURATIONS[-1])))
+
+    job_dir = workdir / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    output_path = job_dir / payload.get("output_filename", "generated.mp4")
+    headers = {"x-goog-api-key": api_key}
+    try:
+        with httpx.Client(timeout=60) as http:
+            start = http.post(
+                f"{VEO_BASE_URL}/models/{VEO_MODEL}:predictLongRunning",
+                headers=headers,
+                json={
+                    "instances": [{"prompt": prompt}],
+                    "parameters": {
+                        "aspectRatio": aspect_ratio,
+                        "durationSeconds": str(duration),
+                        "resolution": "720p",
+                        "numberOfVideos": 1,
+                        "personGeneration": "allow_adult",
+                    },
+                },
+            )
+            start.raise_for_status()
+            operation_name = start.json()["name"]
+            deadline = time.monotonic() + VEO_POLL_TIMEOUT_SECONDS
+            operation: dict[str, Any] = {}
+            completed = False
+            while time.monotonic() < deadline:
+                time.sleep(VEO_POLL_SECONDS)
+                poll = http.get(f"{VEO_BASE_URL}/{operation_name}", headers=headers)
+                poll.raise_for_status()
+                operation = poll.json()
+                if operation.get("done"):
+                    completed = True
+                    break
+            if not completed:
+                client.fail(job_id, "RETRYABLE", "Veo generation timed out waiting for completion")
+                return
+            if "error" in operation:
+                client.fail(job_id, "RETRYABLE", f"Veo generation failed: {operation['error']}")
+                return
+            samples = (
+                operation.get("response", {})
+                .get("generateVideoResponse", {})
+                .get("generatedSamples", [])
+            )
+            if not samples:
+                client.fail(job_id, "RETRYABLE", "Veo operation completed with no video samples")
+                return
+            video_uri = samples[0]["video"]["uri"]
+            download = http.get(video_uri, headers=headers, follow_redirects=True)
+            download.raise_for_status()
+            output_path.write_bytes(download.content)
+    except httpx.HTTPStatusError as exc:
+        detail = f"Veo API error: {exc.response.status_code} {exc.response.text[:300]}"
+        client.fail(job_id, "RETRYABLE", detail)
+        return
+    except httpx.HTTPError as exc:
+        client.fail(job_id, "RETRYABLE", f"Veo request failed: {str(exc)[:300]}")
+        return
+
+    if not output_path.is_file() or output_path.stat().st_size == 0:
+        client.fail(job_id, "RETRYABLE", "Veo download did not produce a non-empty file")
+        return
+    checksum = hashlib.sha256(output_path.read_bytes()).hexdigest()
+    provenance = {
+        "job_id": job_id,
+        "prompt": prompt,
+        "provider": "gemini-veo-api",
+        "model": VEO_MODEL,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "checksum": checksum,
+    }
+    provenance_path = job_dir / "provenance.json"
+    provenance_path.write_text(json.dumps(provenance, indent=2))
+    client.upload_artifact(job_id, output_path)
+    client.upload_artifact(job_id, provenance_path)
+    client.complete(job_id)
+
+
 def run_flow_generation(client: AgentClient, job: dict[str, Any], workdir: Path) -> None:
     job_id = job["id"]
     payload = job.get("payload", {})
@@ -614,11 +728,16 @@ def detect_capabilities() -> dict[str, Any]:
         if CANONICAL_AVD_NAME in avds:
             capabilities.append("android_capture")
 
+    has_veo_key = bool(os.environ.get("GEMINI_API_KEY"))
+    metadata["gemini_api_key_configured"] = has_veo_key
+    if has_veo_key:
+        capabilities.append("flow_generation")
+
     executable = _chromium_executable()
     if executable and _playwright_available():
         metadata["browser"] = executable
         metadata["flow_profile_configured"] = FLOW_PROFILE_PATH.is_dir()
-        if FLOW_PROFILE_PATH.is_dir():
+        if FLOW_PROFILE_PATH.is_dir() and not has_veo_key:
             capabilities.append("flow_generation")
 
     return {"capabilities": capabilities, "metadata": metadata}
@@ -719,7 +838,11 @@ def run_job(client: AgentClient, job: dict[str, Any], workdir: Path) -> None:
     elif capability == "android_capture":
         run_android_capture(client, job, workdir)
     elif capability == "flow_generation":
-        run_flow_generation(client, job, workdir)
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if api_key:
+            run_veo_generation(client, job, workdir, api_key)
+        else:
+            run_flow_generation(client, job, workdir)
     else:
         client.fail(
             job["id"], "EXTERNAL_ACTION_REQUIRED", f"{capability} has no handler on this agent"

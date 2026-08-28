@@ -194,6 +194,8 @@ def test_flow_stage_creates_flow_generation_worker_job_per_scene(services: Servi
         "prompt": "A fictional productivity app demo, cinematic vertical clip.",
         "output_filename": "scene-1.mp4",
         "scene_id": "scene-1",
+        "aspect_ratio": "9:16",
+        "duration_seconds": 5,
     }
 
 

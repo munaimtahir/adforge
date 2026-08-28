@@ -243,6 +243,8 @@ def build_flow_generation_handler(
                         "prompt": scene.prompt,
                         "output_filename": scene.expected_filename,
                         "scene_id": scene.scene_id,
+                        "aspect_ratio": scene.aspect_ratio,
+                        "duration_seconds": scene.duration_seconds,
                     },
                     idempotency_key,
                     task_id=task.id,
