@@ -10,7 +10,7 @@ Group=adforge
 WorkingDirectory=/opt/adforge/app
 EnvironmentFile=/opt/adforge/config/adforge.env
 UMask=0077
-ExecStart=/usr/bin/env /opt/adforge/venv/bin/uvicorn adforge.web:create_app --factory --host 127.0.0.1 --port 8080 --proxy-headers --forwarded-allow-ips=127.0.0.1
+ExecStart=/usr/bin/env /opt/adforge/venv/bin/uvicorn adforge.web:create_app --factory --host 127.0.0.1 --port 8089 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=60
