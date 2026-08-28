@@ -195,6 +195,22 @@ def build_product_truth_validation_handler(services: Services) -> StageHandler:
 # STRATEGY / SCRIPT / STORYBOARD (single AI role each)
 # --------------------------------------------------------------------------
 
+# `ProductTruthService.validate_claim` (by design -- this is the safety-critical
+# claim gate) requires a `claims` entry to exactly equal an approved feature's
+# evidence text after casefold/strip, not a paraphrase or substring. Providers
+# reliably paraphrase ("Lets you add a task to a list" for the approved "Lets you
+# add a task to a fictional list") unless told not to, which burns through the
+# task's retry budget on an avoidable rejection. Telling them explicitly to copy
+# verbatim or omit is a prompting fix; weakening the validator itself is not an
+# option here, that's the actual safeguard.
+CLAIM_DISCIPLINE_INSTRUCTION = (
+    "If this role's output includes a `claims` field, every entry must be copied "
+    "character-for-character from the supplied approved_features list -- do not "
+    "paraphrase, shorten, or reword them even slightly. If no approved feature "
+    "text fits naturally, leave `claims` empty rather than inventing or "
+    "paraphrasing one."
+)
+
 
 def build_strategy_handler(services: Services, router: ProviderRouter) -> StageHandler:
     pipeline = CreativePipeline(services)
@@ -204,6 +220,7 @@ def build_strategy_handler(services: Services, router: ProviderRouter) -> StageH
         _select_and_execute(
             services, router, pipeline, "creative-strategy", campaign, snapshot,
             task.id, campaign.target_duration_seconds,
+            additional_context={"claim_discipline": CLAIM_DISCIPLINE_INSTRUCTION},
         )
         return {}
 
@@ -218,6 +235,7 @@ def build_script_handler(services: Services, router: ProviderRouter) -> StageHan
         _select_and_execute(
             services, router, pipeline, "script", campaign, snapshot,
             task.id, campaign.target_duration_seconds,
+            additional_context={"claim_discipline": CLAIM_DISCIPLINE_INSTRUCTION},
         )
         return {}
 
@@ -232,6 +250,7 @@ def build_storyboard_handler(services: Services, router: ProviderRouter) -> Stag
         _select_and_execute(
             services, router, pipeline, "storyboard", campaign, snapshot,
             task.id, campaign.target_duration_seconds,
+            additional_context={"claim_discipline": CLAIM_DISCIPLINE_INSTRUCTION},
         )
         return {}
 
