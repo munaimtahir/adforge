@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -108,6 +109,63 @@ def test_campaign_creation_path_validation_and_state_visibility(
     detail = client.get(created.headers["location"])
     assert "CREATED" in detail.text
     assert "Use approved proof" in detail.text
+
+
+def test_new_product_form_creates_a_ready_product_from_pasted_truth(
+    client: TestClient,
+) -> None:
+    csrf = login(client)
+    truth = json.dumps(
+        {
+            "product_id": "second-product",
+            "product_name": "Second Product",
+            "approved_features": ["Does the fictional thing"],
+            "prohibited_claims": ["Guarantees anything"],
+            "evidence": [
+                {
+                    "claim": "Does the fictional thing",
+                    "status": "CURRENT",
+                    "source": "APK",
+                }
+            ],
+            "last_verified_at": "2026-08-29T00:00:00Z",
+        }
+    )
+    created = client.post(
+        "/products",
+        data={
+            "csrf": csrf,
+            "name": "Second Product",
+            "slug": "second-product",
+            "product_truth_json": truth,
+        },
+        follow_redirects=False,
+    )
+    assert created.status_code == 303
+    context: WebContext = client.app.state.context
+    product = context.services.products.get("second-product")
+    assert product is not None
+    assert product.truth_readiness == TruthReadiness.READY
+    detail = client.get(created.headers["location"])
+    assert "Second Product" in detail.text
+    assert "READY" in detail.text
+
+
+def test_new_product_form_rejects_invalid_truth_json(client: TestClient) -> None:
+    csrf = login(client)
+    rejected = client.post(
+        "/products",
+        data={
+            "csrf": csrf,
+            "name": "Broken",
+            "slug": "broken-product",
+            "product_truth_json": "not json",
+        },
+    )
+    assert rejected.status_code == 200
+    assert "invalid JSON" in rejected.text
+    context: WebContext = client.app.state.context
+    assert context.services.products.get("broken-product") is None
 
 
 def test_one_active_campaign_is_enforced_in_ux_and_action(client: TestClient) -> None:

@@ -28,8 +28,9 @@ from adforge.campaign_stages import (
     build_strategy_handler,
 )
 from adforge.health import collect_capabilities, platform_status
-from adforge.models import Campaign, CampaignState, TaskState, TruthReadiness, WorkerNode
+from adforge.models import Campaign, CampaignState, Product, TaskState, TruthReadiness, WorkerNode
 from adforge.orchestrator import ActiveCampaignError, Orchestrator, TransitionError
+from adforge.product_truth import ProductTruthError, ProductTruthService
 from adforge.providers import ClaudeCodeProvider, CodexCLIProvider, ProviderRouter
 from adforge.renderer import FFmpegRenderer
 from adforge.services import Services
@@ -219,6 +220,40 @@ def create_app(
         if product is None:
             raise HTTPException(status_code=404)
         return render(request, "product_detail.html", product=product)
+
+    @app.get("/products/new", response_class=HTMLResponse)
+    def new_product(request: Request, _: Session) -> HTMLResponse:
+        return render(request, "new_product.html", error=None)
+
+    @app.post("/products", response_class=HTMLResponse)
+    def create_product(
+        request: Request,
+        session: Session,
+        csrf: Annotated[str, Form()],
+        name: Annotated[str, Form(min_length=1, max_length=100)],
+        slug: Annotated[str, Form(min_length=1, max_length=100)],
+        product_truth_json: Annotated[str, Form(min_length=1)],
+    ) -> Response:
+        require_csrf(session, csrf)
+        try:
+            truth = json.loads(product_truth_json)
+        except json.JSONDecodeError as exc:
+            return render(request, "new_product.html", error=f"invalid JSON: {exc}")
+        try:
+            product = Product.model_validate({"id": slug, "name": name, "slug": slug})
+        except ValueError as exc:
+            return render(request, "new_product.html", error=str(exc))
+        runtime_product_dir = context.services.storage.root / "products" / slug / "truth"
+        runtime_product_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        truth_path = runtime_product_dir / "PRODUCT_TRUTH.json"
+        truth_path.write_text(json.dumps(truth, indent=2, sort_keys=True) + "\n")
+        truth_service = ProductTruthService(context.services)
+        saved = context.services.products.save(product)
+        try:
+            truth_service.import_for_product(saved, truth_path)
+        except ProductTruthError as exc:
+            return render(request, "new_product.html", error=str(exc))
+        return RedirectResponse(f"/products/{slug}", status_code=status.HTTP_303_SEE_OTHER)
 
     @app.get("/campaigns/new", response_class=HTMLResponse)
     def new_campaign(request: Request, _: Session) -> HTMLResponse:
