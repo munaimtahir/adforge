@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from adforge.android import APKIngestor, APKValidationError
 from adforge.auth import SessionSigner, verify_password
 from adforge.bootstrap import ensure_warranty_vault_product
 from adforge.campaign_stages import (
@@ -258,6 +259,13 @@ def create_app(
             )
             + "\n"
         )
+        if validated_apk is not None:
+            try:
+                APKIngestor(context.services, context.import_root).ingest(
+                    campaign.id, validated_apk
+                )
+            except APKValidationError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         return RedirectResponse(
             f"/campaigns/{campaign.id}", status_code=status.HTTP_303_SEE_OTHER
         )
