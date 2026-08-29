@@ -490,3 +490,52 @@ def test_asset_plan_rejects_unsupported_classifications(tmp_path: Path, services
     )
     with pytest.raises(StageDispatchError, match="unsupported classifications"):
         handler(campaign, task, 1)
+
+
+def test_asset_plan_request_gives_the_ai_the_real_storyboard_scene_ids(
+    tmp_path: Path, services: Services
+) -> None:
+    """Regression test: found live on a real campaign run.
+
+    The asset-plan role's context never included the storyboard's own scene_id
+    strings, so the AI free-formed its own scene id convention (e.g. "scene_01"
+    instead of the storyboard's "scene_01_hook"). EDIT_PLAN then failed for every
+    scene with "has no planned asset in ASSET_PLAN" because the two AI-authored
+    outputs referred to the same scenes by different ids. The context must carry
+    the real scene_id values so the AI can (and is told to) copy them verbatim.
+    """
+    campaign = make_product_and_campaign(services, tmp_path)
+    workspace = services.storage.campaign_workspace(campaign.id)
+    seed_apk(services, campaign.id)
+    (workspace / "storyboard" / "storyboard.v1.json").write_text(
+        json.dumps(
+            {
+                "role": "storyboard",
+                "version": 1,
+                "product_truth_snapshot_id": "x",
+                "product_truth_checksum": "a" * 64,
+                "output": SCRIPTED_OUTPUTS["storyboard"],
+            }
+        )
+    )
+    services.truth_snapshots.save(
+        ProductTruthSnapshot(
+            product_id=campaign.product_id,
+            campaign_id=campaign.id,
+            checksum="a" * 64,
+            truth=TRUTH,
+            provenance=TRUTH["evidence"],
+        )
+    )
+    provider = ScriptedProvider(dict(SCRIPTED_OUTPUTS))
+    router = ProviderRouter([provider])
+    handler = build_asset_plan_handler(services, router)
+    task = services.tasks.save(
+        CampaignTask(campaign_id=campaign.id, task_type="asset_plan", idempotency_key="k")
+    )
+    handler(campaign, task, 1)
+
+    request = next(call for call in provider.calls if call.task_type == "asset-plan")
+    storyboard_scenes = request.context["task_inputs"]["storyboard_scenes"]
+    assert [scene["scene_id"] for scene in storyboard_scenes] == ["capture-1", "gen-1"]
+    assert "verbatim" in request.context["task_inputs"]["instruction"]

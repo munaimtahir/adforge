@@ -281,10 +281,18 @@ def build_asset_plan_handler(services: Services, router: ProviderRouter) -> Stag
                 task.id, campaign.target_duration_seconds,
                 additional_context={
                     "supported_classifications": [c.value for c in SUPPORTED_ASSET_CLASSIFICATIONS],
+                    "storyboard_scenes": [
+                        {"scene_id": scene.scene_id, "description": scene.description}
+                        for scene in storyboard.scenes
+                    ],
                     "instruction": (
                         "Classify every asset need using only CAPTURE_APP or "
                         "GENERATE_VIDEO; other classifications are not yet "
-                        "production-supported."
+                        "production-supported. Every scene_id you output in "
+                        "scene_ids MUST be copied verbatim, character-for-character, "
+                        "from storyboard_scenes[].scene_id above -- do not "
+                        "paraphrase, shorten, or invent your own scene ids. Every "
+                        "storyboard scene must be covered by exactly one asset need."
                     ),
                 },
             )
