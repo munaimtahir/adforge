@@ -365,6 +365,14 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
             client.fail(job_id, "RETRYABLE", "emulator did not report boot completion in time")
             return
         install = _adb(sdk["adb"], serial, "install", "-r", str(apk_path), timeout=180)
+        stale_signature = "INSTALL_FAILED_UPDATE_INCOMPATIBLE" in (install.stderr or "")
+        if install.returncode != 0 and stale_signature:
+            # A build of this package_id signed with a different key is already on
+            # the device (e.g. left over from an earlier session) -- `-r` cannot
+            # replace across a signature change, that's an Android OS security
+            # restriction no install flag can override. Remove it and retry once.
+            _adb(sdk["adb"], serial, "uninstall", package_id, timeout=60)
+            install = _adb(sdk["adb"], serial, "install", "-r", str(apk_path), timeout=180)
         if install.returncode != 0:
             client.fail(job_id, "RETRYABLE", f"adb install failed: {install.stderr[-500:]}")
             return
@@ -642,81 +650,25 @@ def run_veo_generation(
     client.complete(job_id)
 
 
-def run_flow_generation(client: AgentClient, job: dict[str, Any], workdir: Path) -> None:
-    job_id = job["id"]
-    payload = job.get("payload", {})
-    prompt = payload.get("prompt")
-    if not prompt:
-        client.fail(job_id, "NON_RETRYABLE", "job payload missing prompt")
-        return
-    if not _playwright_available():
-        client.fail(job_id, "EXTERNAL_ACTION_REQUIRED", "Playwright is not installed")
-        return
-    executable = _chromium_executable()
-    if not executable:
-        client.fail(job_id, "EXTERNAL_ACTION_REQUIRED", "no Chrome/Chromium binary found")
-        return
-    health = flow_health(FLOW_PROFILE_PATH, executable)
-    if health["status"] != "READY":
-        client.fail(job_id, "EXTERNAL_ACTION_REQUIRED", f"FLOW_AUTHENTICATION_REQUIRED: {health}")
-        return
-
-    from playwright.sync_api import sync_playwright
-
-    job_dir = workdir / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-    output_path = job_dir / payload.get("output_filename", "generated.mp4")
-    try:
-        with sync_playwright() as playwright:
-            context = playwright.chromium.launch_persistent_context(
-                str(FLOW_PROFILE_PATH), executable_path=executable, headless=True,
-                accept_downloads=True,
-            )
-            try:
-                page = context.pages[0] if context.pages else context.new_page()
-                _navigate_to_flow_app(page)
-                if "accounts.google" in page.url:
-                    raise RuntimeError(  # noqa: TRY301
-                        "Flow login required in the configured persistent browser profile"
-                    )
-                # NOTE: real generation-page selectors are still unverified against
-                # the actual authenticated tool -- see docs/BLOCKERS.md B-003/B-006.
-                # `:not([name="g-recaptcha-response"])` is a known-necessary exclusion
-                # (that hidden field was the prior failure mode), not a confirmed match
-                # for the real prompt box.
-                page.locator('textarea:not([name="g-recaptcha-response"])').first.fill(prompt)
-                page.locator('button:has-text("Generate")').first.click()
-                with page.expect_download(timeout=600_000) as download_info:
-                    page.locator('button:has-text("Download")').first.click(timeout=600_000)
-                download_info.value.save_as(output_path)
-            finally:
-                context.close()
-    except Exception as exc:  # noqa: BLE001 - classify as retryable, not a crash
-        client.fail(job_id, "RETRYABLE", f"Flow generation failed: {str(exc)[:500]}")
-        return
-    if not output_path.is_file() or output_path.stat().st_size == 0:
-        client.fail(job_id, "RETRYABLE", "Flow download did not produce a non-empty file")
-        return
-    checksum = hashlib.sha256(output_path.read_bytes()).hexdigest()
-    provenance = {
-        "job_id": job_id,
-        "prompt": prompt,
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "checksum": checksum,
-    }
-    provenance_path = job_dir / "provenance.json"
-    provenance_path.write_text(json.dumps(provenance, indent=2))
-    client.upload_artifact(job_id, output_path)
-    client.upload_artifact(job_id, provenance_path)
-    client.complete(job_id)
-
-
 # --------------------------------------------------------------------------
 # Capability detection / doctor
 # --------------------------------------------------------------------------
 
 
 def detect_capabilities() -> dict[str, Any]:
+    """`flow_generation` is only ever offered via the real Gemini (Veo) API.
+
+    Browser-automated Flow generation (filling its prompt box, clicking Generate)
+    used to be attempted here as a fallback whenever a Chromium/Playwright profile
+    was configured. Removed entirely -- verified live that Google blocks
+    Playwright-controlled sign-in ("This browser or app may not be secure") and,
+    separately, that a stale-CTA navigation issue made the generation attempt fill
+    a hidden reCAPTCHA field and time out -- three independent, deliberate
+    anti-automation layers is a firm signal to stop, not route around. Without a
+    configured key, flow_generation jobs are simply never claimed by this worker
+    and sit `PENDING` for manual completion via the AdForge web UI instead of
+    burning through 3 automated attempts that cannot succeed.
+    """
     capabilities = ["synthetic_echo"]
     metadata: dict[str, Any] = {}
 
@@ -732,13 +684,6 @@ def detect_capabilities() -> dict[str, Any]:
     metadata["gemini_api_key_configured"] = has_veo_key
     if has_veo_key:
         capabilities.append("flow_generation")
-
-    executable = _chromium_executable()
-    if executable and _playwright_available():
-        metadata["browser"] = executable
-        metadata["flow_profile_configured"] = FLOW_PROFILE_PATH.is_dir()
-        if FLOW_PROFILE_PATH.is_dir() and not has_veo_key:
-            capabilities.append("flow_generation")
 
     return {"capabilities": capabilities, "metadata": metadata}
 
@@ -842,7 +787,15 @@ def run_job(client: AgentClient, job: dict[str, Any], workdir: Path) -> None:
         if api_key:
             run_veo_generation(client, job, workdir, api_key)
         else:
-            run_flow_generation(client, job, workdir)
+            # Not reached in practice -- detect_capabilities() never advertises
+            # flow_generation without a key, so this worker never claims one.
+            # Guarded here only so a job can't silently hang if that ever changes.
+            client.fail(
+                job["id"],
+                "EXTERNAL_ACTION_REQUIRED",
+                "no GEMINI_API_KEY configured; complete this job manually via "
+                "the AdForge web UI instead",
+            )
     else:
         client.fail(
             job["id"], "EXTERNAL_ACTION_REQUIRED", f"{capability} has no handler on this agent"
