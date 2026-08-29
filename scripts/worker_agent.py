@@ -520,6 +520,14 @@ def execute_capture_actions(
                 raise AndroidDSLError(f"TAP_TEXT could not find element with text {target_text!r}")
             cx, cy = (bounds[0] + bounds[2]) // 2, (bounds[1] + bounds[3]) // 2
             _adb(adb_path, serial, "shell", "input", "tap", str(cx), str(cy), timeout=15)
+        elif action == "TAP_TEXT_IF_VISIBLE":
+            # For screens that may or may not appear (first-run onboarding,
+            # permission/consent prompts): tap if present, silently continue
+            # if not -- unlike TAP_TEXT this is never a hard failure.
+            bounds = _ui_bounds_for_text(_ui_dump(adb_path, serial, job_dir), target_text or "")
+            if bounds is not None:
+                cx, cy = (bounds[0] + bounds[2]) // 2, (bounds[1] + bounds[3]) // 2
+                _adb(adb_path, serial, "shell", "input", "tap", str(cx), str(cy), timeout=15)
         elif action == "SCREENSHOT":
             filename = expected_state or f"action-{index}.png"
             if not re.fullmatch(r"[A-Za-z0-9._-]+\.png", filename):

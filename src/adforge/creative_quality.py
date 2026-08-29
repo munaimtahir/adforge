@@ -69,6 +69,7 @@ class AndroidActionType(StrEnum):
     WAIT = "WAIT"
     TAP = "TAP"
     TAP_TEXT = "TAP_TEXT"
+    TAP_TEXT_IF_VISIBLE = "TAP_TEXT_IF_VISIBLE"
     TAP_COORDINATE = "TAP_COORDINATE"
     TYPE_TEXT = "TYPE_TEXT"
     CLEAR_TEXT = "CLEAR_TEXT"
@@ -207,6 +208,7 @@ class AndroidAction(CQModel):
             self.action
             in {
                 AndroidActionType.TAP_TEXT,
+                AndroidActionType.TAP_TEXT_IF_VISIBLE,
                 AndroidActionType.ASSERT_VISIBLE,
                 AndroidActionType.ASSERT_NOT_VISIBLE,
             }

@@ -247,7 +247,16 @@ ANDROID_DSL_INSTRUCTION = (
     "TAP_TEXT with `target_text` set and no x/y -- that is the only text-driven "
     "tap action. ASSERT_VISIBLE/ASSERT_NOT_VISIBLE also take `target_text`, not "
     "coordinates. TYPE_TEXT requires `text`. WAIT requires a positive "
-    "`duration_ms` and no coordinates or text."
+    "`duration_ms` and no coordinates or text. If the first shot of a capture "
+    "sequence needs the app to reach a specific screen, do not assume a "
+    "first-run onboarding/welcome screen will or won't be showing -- app "
+    "onboarding-seen state is not always reset the same way a fresh install "
+    "resets other data, so it can appear on one capture run and not the next. "
+    "Use TAP_TEXT_IF_VISIBLE (same `target_text` shape as TAP_TEXT) for any "
+    "onboarding/permission/consent screen element that might or might not be "
+    "present -- unlike TAP_TEXT, it taps the element if found and does nothing "
+    "(no error) if it isn't, so the sequence proceeds either way. Never use "
+    "plain TAP_TEXT for a screen that might not appear."
 )
 
 STORYBOARD_STRUCTURE_INSTRUCTION = (
