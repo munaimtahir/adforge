@@ -35,7 +35,7 @@ from adforge.android import (
     EmulatorHandoffService,
 )
 from adforge.creative import latest_role_output
-from adforge.creative_quality import Storyboard2
+from adforge.creative_quality import KeyboardPolicy, Storyboard2
 from adforge.models import (
     Asset,
     Campaign,
@@ -124,22 +124,45 @@ def app_capture_payload(services: Services, campaign: Campaign) -> dict[str, Any
         "apk_sha256": sha256_file(apk_path),
         "package_id": package_id,
     }
-    # Real directed cinematography (CQ2): if the storyboard produced a
-    # CaptureInstruction for a capture shot, carry its typed Android DSL action
-    # sequence to the worker so it drives the app deliberately instead of firing
-    # random `monkey` events during the recording.
+    # Real directed cinematography (CQ2): if the storyboard produced
+    # CaptureInstructions for capture shots, carry their typed Android DSL
+    # action sequences to the worker so it drives the app deliberately instead
+    # of firing random `monkey` events during the recording.
+    #
+    # There is exactly one android_capture WorkerJob per campaign, producing
+    # one continuous recording.mp4 that later shots are cut from by timestamp
+    # -- so every capture shot's actions must run in ONE session on the SAME
+    # app install, in storyboard order. Taking only the first capture shot
+    # here used to mean shots that build up in-app state (add a product, set
+    # its warranty, attach a receipt) never actually ran: only the first
+    # shot's few actions were ever sent to the worker, so every later shot
+    # that depended on that state (the dashboard, Expiring Soon) captured an
+    # empty, freshly-installed app instead of the state the storyboard built.
     storyboard = latest_role_output(services, campaign.id, "storyboard-v2")
     if isinstance(storyboard, Storyboard2):
-        capture_shot = next(
-            (shot for shot in storyboard.shots if shot.capture_instruction is not None), None
+        capture_shots = sorted(
+            (shot for shot in storyboard.shots if shot.capture_instruction is not None),
+            key=lambda shot: shot.order,
         )
-        if capture_shot is not None and capture_shot.capture_instruction is not None:
-            instruction = capture_shot.capture_instruction
-            payload["actions"] = [
-                action.model_dump(mode="json") for action in instruction.actions
-            ]
-            payload["keyboard_policy"] = instruction.keyboard_policy.value
-            payload["expected_filenames"] = instruction.expected_filenames
+        if capture_shots:
+            actions: list[dict[str, Any]] = []
+            expected_filenames: list[str] = []
+            keyboard_policy = KeyboardPolicy.ALLOWED
+            for shot in capture_shots:
+                instruction = shot.capture_instruction
+                assert instruction is not None
+                actions.extend(action.model_dump(mode="json") for action in instruction.actions)
+                expected_filenames.extend(instruction.expected_filenames)
+                if instruction.keyboard_policy == KeyboardPolicy.FORBIDDEN:
+                    keyboard_policy = KeyboardPolicy.FORBIDDEN
+                elif (
+                    instruction.keyboard_policy == KeyboardPolicy.REQUIRED
+                    and keyboard_policy != KeyboardPolicy.FORBIDDEN
+                ):
+                    keyboard_policy = KeyboardPolicy.REQUIRED
+            payload["actions"] = actions
+            payload["keyboard_policy"] = keyboard_policy.value
+            payload["expected_filenames"] = expected_filenames
     return payload
 
 

@@ -110,6 +110,64 @@ def seed_generation_request(services: Services, campaign_id: str) -> VideoGenera
     return request
 
 
+def seed_storyboard_with_capture_shots(services: Services, campaign_id: str) -> None:
+    """Two ANDROID_DIRECT_CAPTURE shots whose actions must chain in ONE
+    android_capture session in storyboard order: the second shot's action
+    (checking the item saved by the first) is only meaningful if the first
+    shot's actions actually ran against the same app install first.
+    """
+    storyboard = {
+        "target_duration": 6,
+        "shots": [
+            {
+                "shot_id": "shot-01-add",
+                "scene_id": "scene-add",
+                "order": 0,
+                "start": 0,
+                "duration": 3,
+                "purpose": "add a product",
+                "visual_source": "ANDROID_DIRECT_CAPTURE",
+                "creative_description": "add a product record",
+                "capture_instruction": {
+                    "capture_id": "cap-add",
+                    "package_id": "pk.fictional.demotask",
+                    "actions": [
+                        {"action": "TAP_TEXT", "target_text": "Add product"},
+                        {"action": "TYPE_TEXT", "text": "Kitchen Blender"},
+                    ],
+                    "keyboard_policy": "ALLOWED",
+                    "expected_filenames": ["shot-01.png"],
+                },
+            },
+            {
+                "shot_id": "shot-02-dashboard",
+                "scene_id": "scene-dashboard",
+                "order": 1,
+                "start": 3,
+                "duration": 3,
+                "purpose": "show the saved product on the dashboard",
+                "visual_source": "ANDROID_DIRECT_CAPTURE",
+                "creative_description": "dashboard now shows one product",
+                "capture_instruction": {
+                    "capture_id": "cap-dashboard",
+                    "package_id": "pk.fictional.demotask",
+                    "actions": [
+                        {"action": "ASSERT_VISIBLE", "target_text": "Kitchen Blender"},
+                    ],
+                    "keyboard_policy": "FORBIDDEN",
+                    "expected_filenames": ["shot-02.png"],
+                },
+            },
+        ],
+    }
+    workspace = services.storage.campaign_workspace(campaign_id)
+    directory = workspace / "storyboard"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "storyboard-v2.v1.json").write_text(
+        json.dumps({"output": storyboard})
+    )
+
+
 def register_worker(services: Services, capability: str) -> tuple[WorkerNode, str]:
     worker = services.worker_nodes.save(
         WorkerNode(
@@ -176,6 +234,42 @@ def test_app_capture_creates_android_capture_worker_job_with_correct_payload(
         "package_id": "pk.fictional.demotask",
     }
     assert job.task_id == only_task(services, campaign.id).id
+
+
+def test_app_capture_chains_every_capture_shots_actions_in_one_session(
+    services: Services,
+) -> None:
+    """Regression: `app_capture_payload` used to take only the FIRST capture
+    shot's actions. With a storyboard where a later shot's proof (dashboard
+    shows the saved product) depends on an earlier shot's action (add that
+    product) actually running against the same app install, dropping shots
+    after the first meant the pipeline only ever captured an empty,
+    freshly-installed app -- exactly what silently produced empty-screen ad
+    footage in production. All capture shots' actions must land in one
+    android_capture WorkerJob, in storyboard order.
+    """
+    campaign = campaign_at(services, CampaignState.APP_CAPTURE)
+    seed_apk(services, campaign.id)
+    seed_storyboard_with_capture_shots(services, campaign.id)
+    worker, _job_service = build_worker(services)
+
+    result = worker.run(campaign.id, max_stages=1)
+
+    assert result.state == CampaignState.WAITING_FOR_WORKER
+    jobs = services.worker_jobs.find_by("campaign_id", campaign.id)
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert [action["action"] for action in job.payload["actions"]] == [
+        "TAP_TEXT",
+        "TYPE_TEXT",
+        "ASSERT_VISIBLE",
+    ]
+    assert job.payload["actions"][1]["text"] == "Kitchen Blender"
+    assert job.payload["actions"][2]["target_text"] == "Kitchen Blender"
+    assert job.payload["expected_filenames"] == ["shot-01.png", "shot-02.png"]
+    # Any shot requiring FORBIDDEN wins over an earlier shot's ALLOWED --
+    # the session-wide keyboard-exposure check must stay strict.
+    assert job.payload["keyboard_policy"] == "FORBIDDEN"
 
 
 def test_flow_stage_creates_flow_generation_worker_job_per_scene(services: Services) -> None:
