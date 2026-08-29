@@ -34,6 +34,8 @@ from adforge.android import (
     EmulatorCaptureRequest,
     EmulatorHandoffService,
 )
+from adforge.creative import latest_role_output
+from adforge.creative_quality import Storyboard2
 from adforge.models import (
     Asset,
     Campaign,
@@ -63,7 +65,9 @@ def _manual_fallback_enabled(stage: str) -> bool:
     return stage in {item.strip() for item in configured.split(",") if item.strip() if item}
 
 
-def _existing_job(services: Services, campaign_id: str, idempotency_key: str) -> WorkerJob | None:
+def find_existing_job(
+    services: Services, campaign_id: str, idempotency_key: str
+) -> WorkerJob | None:
     matches = [
         job
         for job in services.worker_jobs.find_by("idempotency_key", idempotency_key)
@@ -101,7 +105,7 @@ def _asset_already_imported(services: Services, campaign_id: str, filepath: str)
 # --------------------------------------------------------------------------
 
 
-def _app_capture_payload(services: Services, campaign: Campaign) -> dict[str, Any]:
+def app_capture_payload(services: Services, campaign: Campaign) -> dict[str, Any]:
     workspace = services.storage.campaign_workspace(campaign.id)
     apk_path = workspace / "app-capture" / "source.apk"
     metadata_path = workspace / "app-capture" / "apk-metadata.json"
@@ -114,12 +118,29 @@ def _app_capture_payload(services: Services, campaign: Campaign) -> dict[str, An
     package_id = metadata.get("package_id")
     if not package_id:
         raise StageDispatchError("ingested APK has no discoverable package_id")
-    return {
+    payload: dict[str, Any] = {
         "apk_relative_path": "app-capture/source.apk",
         "apk_filename": "source.apk",
         "apk_sha256": sha256_file(apk_path),
         "package_id": package_id,
     }
+    # Real directed cinematography (CQ2): if the storyboard produced a
+    # CaptureInstruction for a capture shot, carry its typed Android DSL action
+    # sequence to the worker so it drives the app deliberately instead of firing
+    # random `monkey` events during the recording.
+    storyboard = latest_role_output(services, campaign.id, "storyboard-v2")
+    if isinstance(storyboard, Storyboard2):
+        capture_shot = next(
+            (shot for shot in storyboard.shots if shot.capture_instruction is not None), None
+        )
+        if capture_shot is not None and capture_shot.capture_instruction is not None:
+            instruction = capture_shot.capture_instruction
+            payload["actions"] = [
+                action.model_dump(mode="json") for action in instruction.actions
+            ]
+            payload["keyboard_policy"] = instruction.keyboard_policy.value
+            payload["expected_filenames"] = instruction.expected_filenames
+    return payload
 
 
 def _export_app_capture_manual(services: Services, campaign: Campaign) -> dict[str, Any]:
@@ -149,9 +170,9 @@ def build_app_capture_handler(services: Services, worker_jobs: WorkerJobService)
         if _manual_fallback_enabled(CampaignState.APP_CAPTURE.value):
             return _export_app_capture_manual(services, campaign)
         idempotency_key = f"worker:{task.id}"
-        job = _existing_job(services, campaign.id, idempotency_key)
+        job = find_existing_job(services, campaign.id, idempotency_key)
         if job is None:
-            payload = _app_capture_payload(services, campaign)
+            payload = app_capture_payload(services, campaign)
             job = worker_jobs.create_job(
                 campaign.id,
                 APP_CAPTURE_CAPABILITY,
@@ -167,6 +188,23 @@ def build_app_capture_handler(services: Services, worker_jobs: WorkerJobService)
     return handler
 
 
+def _capture_keyboard_visible(services: Services, campaign_id: str, job: WorkerJob) -> bool | None:
+    """Recover the directed-capture DSL's keyboard-visibility signal from the
+    worker-uploaded `capture.json`, so `CreativeQCHook` can flag KEYBOARD_EXPOSURE.
+    """
+    artifacts = {a.filename: a for a in services.worker_artifacts.find_by("job_id", job.id)}
+    capture_artifact = artifacts.get("capture.json")
+    if capture_artifact is None:
+        return None
+    workspace = services.storage.campaign_workspace(campaign_id)
+    try:
+        payload = json.loads((workspace / capture_artifact.filepath).read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    value = payload.get("keyboard_visible")
+    return value if isinstance(value, bool) else None
+
+
 def _import_app_capture_artifacts(services: Services, campaign: Campaign, job: WorkerJob) -> None:
     artifacts = {a.filename: a for a in services.worker_artifacts.find_by("job_id", job.id)}
     required = ("screenshot.png", "recording.mp4", "device.json", "capture.json", "checksums.json")
@@ -175,6 +213,7 @@ def _import_app_capture_artifacts(services: Services, campaign: Campaign, job: W
         raise StageDispatchError(
             f"android_capture WorkerJob {job.id} is missing required artifacts: {missing}"
         )
+    keyboard_visible = _capture_keyboard_visible(services, campaign.id, job)
     for filename, asset_type in (
         ("screenshot.png", "app_capture_image"),
         ("recording.mp4", "app_capture_video"),
@@ -182,6 +221,13 @@ def _import_app_capture_artifacts(services: Services, campaign: Campaign, job: W
         artifact = artifacts[filename]
         if _asset_already_imported(services, campaign.id, artifact.filepath):
             continue
+        provenance: dict[str, Any] = {
+            "worker_job_id": job.id,
+            "worker_id": job.worker_id,
+            "fictional_demo_data": True,
+        }
+        if asset_type == "app_capture_video" and keyboard_visible is not None:
+            provenance["keyboard_visible"] = keyboard_visible
         asset = services.assets.save(
             Asset(
                 campaign_id=campaign.id,
@@ -190,11 +236,7 @@ def _import_app_capture_artifacts(services: Services, campaign: Campaign, job: W
                 filepath=artifact.filepath,
                 source="worker:android_capture",
                 checksum=artifact.checksum,
-                provenance={
-                    "worker_job_id": job.id,
-                    "worker_id": job.worker_id,
-                    "fictional_demo_data": True,
-                },
+                provenance=provenance,
             )
         )
         _append_asset_to_manifest(services, campaign.id, asset)
@@ -234,7 +276,7 @@ def build_flow_generation_handler(
         dispatched: list[str] = []
         for scene in request.scenes:
             idempotency_key = f"worker:{task.id}:{scene.scene_id}"
-            job = _existing_job(services, campaign.id, idempotency_key)
+            job = find_existing_job(services, campaign.id, idempotency_key)
             if job is None:
                 job = worker_jobs.create_job(
                     campaign.id,

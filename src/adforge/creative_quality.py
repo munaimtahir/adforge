@@ -624,6 +624,14 @@ class AndroidAdapter(Protocol):
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 300) -> None: ...
     def type_text(self, value: str) -> None: ...
     def screenshot(self, destination: Path) -> Path: ...
+    def back(self) -> None: ...
+    def home(self) -> None: ...
+    def hide_keyboard(self) -> None: ...
+    def show_keyboard(self) -> None: ...
+    def clear_text(self) -> None: ...
+    def tap_text(self, target_text: str) -> None: ...
+    def assert_visible(self, target_text: str) -> bool: ...
+    def assert_package(self, package_id: str) -> bool: ...
 
 
 class AndroidActionExecutor:
@@ -676,21 +684,40 @@ class AndroidActionExecutor:
                 self.adapter.screenshot(screenshot_dir / filename)
             elif action.action == AndroidActionType.WAIT:
                 time.sleep(action.duration_ms / 1000)
-            elif action.action in {
-                AndroidActionType.HIDE_KEYBOARD,
-                AndroidActionType.SHOW_KEYBOARD,
-                AndroidActionType.CLEAR_TEXT,
-                AndroidActionType.TAP_TEXT,
-                AndroidActionType.BACK,
-                AndroidActionType.HOME,
-                AndroidActionType.ASSERT_VISIBLE,
-                AndroidActionType.ASSERT_NOT_VISIBLE,
-                AndroidActionType.ASSERT_PACKAGE,
-            }:
-                raise AndroidActionError(
-                    ActionFailureCode.UNSUPPORTED_ACTION,
-                    f"adapter does not expose {action.action.value}",
-                )
+            elif action.action == AndroidActionType.BACK:
+                self.adapter.back()
+            elif action.action == AndroidActionType.HOME:
+                self.adapter.home()
+            elif action.action == AndroidActionType.HIDE_KEYBOARD:
+                self.adapter.hide_keyboard()
+            elif action.action == AndroidActionType.SHOW_KEYBOARD:
+                self.adapter.show_keyboard()
+            elif action.action == AndroidActionType.CLEAR_TEXT:
+                self.adapter.clear_text()
+            elif action.action == AndroidActionType.TAP_TEXT:
+                assert action.target_text is not None
+                self.adapter.tap_text(action.target_text)
+            elif action.action == AndroidActionType.ASSERT_VISIBLE:
+                assert action.target_text is not None
+                if not self.adapter.assert_visible(action.target_text):
+                    raise AndroidActionError(
+                        ActionFailureCode.ASSERTION_FAILED,
+                        f"{action.target_text!r} is not visible",
+                    )
+            elif action.action == AndroidActionType.ASSERT_NOT_VISIBLE:
+                assert action.target_text is not None
+                if self.adapter.assert_visible(action.target_text):
+                    raise AndroidActionError(
+                        ActionFailureCode.ASSERTION_FAILED, f"{action.target_text!r} is visible"
+                    )
+            elif action.action == AndroidActionType.ASSERT_PACKAGE:
+                if action.expected_state and not self.adapter.assert_package(
+                    action.expected_state
+                ):
+                    raise AndroidActionError(
+                        ActionFailureCode.ASSERTION_FAILED,
+                        f"package {action.expected_state!r} is not focused",
+                    )
             else:
                 raise AndroidActionError(
                     ActionFailureCode.UNSUPPORTED_ACTION,

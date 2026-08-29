@@ -36,6 +36,7 @@ import stat
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -345,6 +346,138 @@ def wait_for_boot(adb_path: str, serial: str, *, timeout_seconds: int = 180) -> 
     return False
 
 
+class AndroidDSLError(RuntimeError):
+    pass
+
+
+def _ui_dump(adb_path: str, serial: str, workdir: Path) -> str:
+    _adb(adb_path, serial, "shell", "uiautomator", "dump", "/sdcard/window_dump.xml", timeout=20)
+    local = workdir / "window_dump.xml"
+    _adb(adb_path, serial, "pull", "/sdcard/window_dump.xml", str(local), timeout=20)
+    try:
+        return local.read_text(errors="replace")
+    except OSError:
+        return ""
+
+
+def _ui_bounds_for_text(xml_text: str, target_text: str) -> tuple[int, int, int, int] | None:
+    needle = target_text.strip().casefold()
+    if not needle or not xml_text:
+        return None
+    try:
+        root = ET.fromstring(xml_text)  # noqa: S314 - our own uiautomator dump, not remote input
+    except ET.ParseError:
+        return None
+    for node in root.iter("node"):
+        text = node.get("text") or ""
+        desc = node.get("content-desc") or ""
+        if needle in text.casefold() or needle in desc.casefold():
+            match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.get("bounds") or "")
+            if match:
+                x1, y1, x2, y2 = (int(value) for value in match.groups())
+                return (x1, y1, x2, y2)
+    return None
+
+
+def _keyboard_visible(adb_path: str, serial: str) -> bool:
+    result = _adb(adb_path, serial, "shell", "dumpsys", "input_method", timeout=15)
+    return bool(re.search(r"mInputShown=true", result.stdout or ""))
+
+
+def _dsl_type_text(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9 ._@+-]{1,200}", value):
+        raise AndroidDSLError("capture DSL text contains unsupported characters")
+    return value.replace(" ", "%s")
+
+
+def execute_capture_actions(
+    adb_path: str, serial: str, actions: list[dict[str, Any]], job_dir: Path
+) -> dict[str, Any]:
+    """Real, directed execution of the CQ2 Android DSL (`AndroidActionType` in
+    `adforge.creative_quality`) against a live device/emulator -- deliberate
+    taps, typed text, waits, and asserted UI state, driven by the storyboard's
+    `CaptureInstruction`. This replaces blind `monkey --pct-touch` event
+    injection, which cannot produce directed, on-brief cinematography.
+    """
+    screenshots: list[str] = []
+    for index, raw_action in enumerate(actions):
+        action = raw_action.get("action")
+        x, y = raw_action.get("x"), raw_action.get("y")
+        x2, y2 = raw_action.get("x2"), raw_action.get("y2")
+        text = raw_action.get("text")
+        target_text = raw_action.get("target_text")
+        duration_ms = int(raw_action.get("duration_ms") or 300)
+        expected_state = raw_action.get("expected_state")
+        if action == "WAIT":
+            time.sleep(duration_ms / 1000)
+        elif action in ("TAP", "TAP_COORDINATE"):
+            _adb(adb_path, serial, "shell", "input", "tap", str(x), str(y), timeout=15)
+        elif action == "HOLD":
+            _adb(
+                adb_path, serial, "shell", "input", "swipe",
+                str(x), str(y), str(x), str(y), str(duration_ms), timeout=15,
+            )
+        elif action == "SWIPE":
+            _adb(
+                adb_path, serial, "shell", "input", "swipe",
+                str(x), str(y), str(x2), str(y2), str(duration_ms), timeout=15,
+            )
+        elif action == "TYPE_TEXT":
+            _adb(
+                adb_path, serial, "shell", "input", "text", _dsl_type_text(text or ""), timeout=15
+            )
+        elif action == "CLEAR_TEXT":
+            _adb(adb_path, serial, "shell", "input", "keyevent", "KEYCODE_MOVE_END", timeout=15)
+            _adb(
+                adb_path, serial, "shell", "input", "keyevent",
+                *(["KEYCODE_DEL"] * 50), timeout=15,
+            )
+        elif action == "BACK":
+            _adb(adb_path, serial, "shell", "input", "keyevent", "KEYCODE_BACK", timeout=15)
+        elif action == "HOME":
+            _adb(adb_path, serial, "shell", "input", "keyevent", "KEYCODE_HOME", timeout=15)
+        elif action == "HIDE_KEYBOARD":
+            if _keyboard_visible(adb_path, serial):
+                _adb(adb_path, serial, "shell", "input", "keyevent", "KEYCODE_BACK", timeout=15)
+                time.sleep(0.5)
+        elif action == "SHOW_KEYBOARD":
+            if x is not None and y is not None:
+                _adb(adb_path, serial, "shell", "input", "tap", str(x), str(y), timeout=15)
+        elif action == "TAP_TEXT":
+            bounds = _ui_bounds_for_text(_ui_dump(adb_path, serial, job_dir), target_text or "")
+            if bounds is None:
+                raise AndroidDSLError(f"TAP_TEXT could not find element with text {target_text!r}")
+            cx, cy = (bounds[0] + bounds[2]) // 2, (bounds[1] + bounds[3]) // 2
+            _adb(adb_path, serial, "shell", "input", "tap", str(cx), str(cy), timeout=15)
+        elif action == "SCREENSHOT":
+            filename = expected_state or f"action-{index}.png"
+            if not re.fullmatch(r"[A-Za-z0-9._-]+\.png", filename):
+                raise AndroidDSLError("unsafe screenshot filename in capture DSL")
+            destination = job_dir / filename
+            shot = _adb(adb_path, serial, "exec-out", "screencap", "-p", text=False, timeout=30)
+            destination.write_bytes(shot.stdout)
+            screenshots.append(destination.name)
+        elif action == "ASSERT_VISIBLE":
+            xml_text = _ui_dump(adb_path, serial, job_dir)
+            if _ui_bounds_for_text(xml_text, target_text or "") is None:
+                raise AndroidDSLError(f"ASSERT_VISIBLE failed: {target_text!r} not found")
+        elif action == "ASSERT_NOT_VISIBLE":
+            xml_text = _ui_dump(adb_path, serial, job_dir)
+            if _ui_bounds_for_text(xml_text, target_text or "") is not None:
+                raise AndroidDSLError(f"ASSERT_NOT_VISIBLE failed: {target_text!r} is visible")
+        elif action == "ASSERT_PACKAGE":
+            if expected_state:
+                focus = _adb(adb_path, serial, "shell", "dumpsys", "window", "windows", timeout=15)
+                if expected_state not in (focus.stdout or ""):
+                    raise AndroidDSLError(f"ASSERT_PACKAGE failed: {expected_state!r} not focused")
+        else:
+            raise AndroidDSLError(f"unsupported capture DSL action: {action}")
+    return {
+        "keyboard_visible": _keyboard_visible(adb_path, serial),
+        "screenshot_files": screenshots,
+    }
+
+
 def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path) -> None:
     job_id = job["id"]
     payload = job.get("payload", {})
@@ -417,10 +550,17 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
         screenshot = _adb(sdk["adb"], serial, "exec-out", "screencap", "-p", text=False, timeout=30)
         screenshot_path.write_bytes(screenshot.stdout)
 
+        dsl_actions = payload.get("actions") or []
         remote_video = "/sdcard/adforge-capture.mp4"
         recording_path = job_dir / "recording.mp4"
-        recording_seconds = 10
+        if dsl_actions:
+            wait_seconds = sum((a.get("duration_ms") or 300) / 1000 for a in dsl_actions)
+            recording_seconds = max(10, min(60, int(wait_seconds + 0.3 * len(dsl_actions)) + 4))
+        else:
+            recording_seconds = 10
         recording_ok = False
+        dsl_result: dict[str, Any] = {}
+        dsl_error: str | None = None
         for _capture_attempt in range(1, 4):
             _adb(sdk["adb"], serial, "shell", "rm", "-f", remote_video, timeout=15)
             started_at = time.monotonic()
@@ -429,29 +569,43 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
             # near-empty MP4 (found live: 1 frame, no duration) because Android's
             # encoder only emits a frame when SurfaceFlinger composites a change,
             # and this app's screen has nothing animating on it while idle. Real
-            # on-screen touches during the recording (below) are what actually
-            # produce a valid, playable clip.
+            # on-screen action during the recording (below) is what actually
+            # produces a valid, playable clip.
             _adb(
                 sdk["adb"], serial, "shell", "nohup", "screenrecord", "--time-limit",
                 str(recording_seconds), remote_video, ">", "/dev/null", "2>&1", "&",
                 timeout=15,
             )
             time.sleep(1)
-            _adb(
-                sdk["adb"], serial, "shell", "monkey", "-p", package_id,
-                "--pct-touch", "100", "--pct-motion", "0", "--pct-trackball", "0",
-                "--pct-nav", "0", "--pct-majornav", "0", "--pct-syskeys", "0",
-                "--pct-appswitch", "0", "--pct-anyevent", "0",
-                "-v", "40", "--throttle", "150", timeout=30,
-            )
+            if dsl_actions:
+                # Real directed cinematography: execute the storyboard's typed
+                # Android DSL action sequence instead of injecting random touches.
+                try:
+                    dsl_result = execute_capture_actions(
+                        sdk["adb"], serial, dsl_actions, job_dir
+                    )
+                    dsl_error = None
+                except AndroidDSLError as exc:
+                    dsl_error = str(exc)
+            else:
+                _adb(
+                    sdk["adb"], serial, "shell", "monkey", "-p", package_id,
+                    "--pct-touch", "100", "--pct-motion", "0", "--pct-trackball", "0",
+                    "--pct-nav", "0", "--pct-majornav", "0", "--pct-syskeys", "0",
+                    "--pct-appswitch", "0", "--pct-anyevent", "0",
+                    "-v", "40", "--throttle", "150", timeout=30,
+                )
             remaining = recording_seconds + 2 - (time.monotonic() - started_at)
             if remaining > 0:
                 time.sleep(remaining)
             _adb(sdk["adb"], serial, "pull", remote_video, str(recording_path), timeout=60)
             recording_ok = _recording_has_real_duration(recording_path, recording_seconds)
-            if recording_ok:
+            if recording_ok and dsl_error is None:
                 break
         _adb(sdk["adb"], serial, "shell", "rm", "-f", remote_video, timeout=15)
+        if dsl_error is not None:
+            client.fail(job_id, "RETRYABLE", f"directed capture DSL failed: {dsl_error}")
+            return
         if not recording_ok:
             client.fail(
                 job_id, "RETRYABLE",
@@ -481,6 +635,8 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
             "package_id": package_id,
             "apk_sha256": apk_sha256,
             "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "directed": bool(dsl_actions),
+            "keyboard_visible": dsl_result.get("keyboard_visible"),
         }
         (job_dir / "capture.json").write_text(json.dumps(capture_info, indent=2))
 

@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Literal
 
@@ -205,6 +206,64 @@ class ADBAdapter:
         self._run(["pull", remote, str(destination.resolve())], timeout=60)
         self._run(["shell", "rm", remote])
         return destination
+
+    def back(self) -> None:
+        self._run(["shell", "input", "keyevent", "KEYCODE_BACK"])
+
+    def home(self) -> None:
+        self._run(["shell", "input", "keyevent", "KEYCODE_HOME"])
+
+    def hide_keyboard(self) -> None:
+        result = self._run(["shell", "dumpsys", "input_method"], timeout=15, check=False)
+        if "mInputShown=true" in result.stdout:
+            self._run(["shell", "input", "keyevent", "KEYCODE_BACK"])
+
+    def show_keyboard(self) -> None:
+        # No coordinate is carried by SHOW_KEYBOARD; the caller is expected to have
+        # already TAPped the target field, which is what actually raises the IME.
+        return
+
+    def clear_text(self) -> None:
+        self._run(["shell", "input", "keyevent", "KEYCODE_MOVE_END"])
+        self._run(["shell", "input", "keyevent", *(["KEYCODE_DEL"] * 50)])
+
+    def _ui_dump(self) -> str:
+        self._run(["shell", "uiautomator", "dump", "/sdcard/window_dump.xml"], timeout=20)
+        result = self._run(["exec-out", "cat", "/sdcard/window_dump.xml"], timeout=20, text=False)
+        return result.stdout.decode("utf-8", errors="replace") if result.stdout else ""
+
+    def _ui_bounds(self, target_text: str) -> tuple[int, int, int, int] | None:
+        needle = target_text.strip().casefold()
+        xml_text = self._ui_dump()
+        if not needle or not xml_text:
+            return None
+        try:
+            root = ET.fromstring(xml_text)  # noqa: S314 - our own uiautomator dump
+        except ET.ParseError:
+            return None
+        for node in root.iter("node"):
+            text = node.get("text") or ""
+            desc = node.get("content-desc") or ""
+            if needle in text.casefold() or needle in desc.casefold():
+                match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", node.get("bounds") or "")
+                if match:
+                    x1, y1, x2, y2 = (int(value) for value in match.groups())
+                    return (x1, y1, x2, y2)
+        return None
+
+    def tap_text(self, target_text: str) -> None:
+        bounds = self._ui_bounds(target_text)
+        if bounds is None:
+            raise AndroidError(f"no visible element matches text: {target_text!r}")
+        x1, y1, x2, y2 = bounds
+        self.tap((x1 + x2) // 2, (y1 + y2) // 2)
+
+    def assert_visible(self, target_text: str) -> bool:
+        return self._ui_bounds(target_text) is not None
+
+    def assert_package(self, package_id: str) -> bool:
+        result = self._run(["shell", "dumpsys", "window", "windows"], timeout=15, check=False)
+        return package_id in result.stdout
 
     def _run(
         self,

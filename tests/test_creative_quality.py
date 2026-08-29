@@ -116,6 +116,30 @@ def test_android_dsl_rejects_injection_and_executor_has_no_shell_escape_hatch(
         def screenshot(self, destination: Path) -> Path:
             return destination
 
+        def back(self) -> None:
+            pass
+
+        def home(self) -> None:
+            pass
+
+        def hide_keyboard(self) -> None:
+            pass
+
+        def show_keyboard(self) -> None:
+            pass
+
+        def clear_text(self) -> None:
+            pass
+
+        def tap_text(self, target_text: str) -> None:
+            pass
+
+        def assert_visible(self, target_text: str) -> bool:
+            return True
+
+        def assert_package(self, package_id: str) -> bool:
+            return True
+
     executor = AndroidActionExecutor(Fake())
     with pytest.raises(AndroidActionError) as error:
         executor.execute(AndroidAction(action=AndroidActionType.TAP, x=1081, y=2))

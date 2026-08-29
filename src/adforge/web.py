@@ -100,7 +100,9 @@ class WebContext:
                 CampaignState.EDIT_PLAN: build_edit_plan_handler(services, self.renderer),
                 CampaignState.DRAFT_RENDER: build_draft_render_handler(services, self.renderer),
                 CampaignState.QC: build_qc_handler(services, self.renderer),
-                CampaignState.REPAIR: build_repair_handler(services, self.renderer),
+                CampaignState.REPAIR: build_repair_handler(
+                    services, self.provider_router, self.renderer, self.worker_jobs
+                ),
                 CampaignState.FINAL_RENDER: build_final_render_handler(services, self.renderer),
                 CampaignState.EXPORT: build_export_handler(services),
             },

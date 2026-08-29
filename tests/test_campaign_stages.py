@@ -68,7 +68,16 @@ class ScriptedProvider(ReasoningProvider):
     """A deterministic, offline `ReasoningProvider` returning canned per-role output."""
 
     name = "scripted"
-    capabilities = {"creative", "reasoning", "script", "storyboard", "product_truth_qc"}
+    capabilities = {
+        "creative",
+        "reasoning",
+        "script",
+        "storyboard",
+        "product_truth_qc",
+        "creative-strategy-v2",
+        "script-v2",
+        "storyboard-v2",
+    }
 
     def __init__(self, outputs: dict[str, Any]) -> None:
         self._outputs = outputs
@@ -103,52 +112,89 @@ TRUTH = {
     "last_verified_at": "2026-08-28T00:00:00Z",
 }
 
+STRATEGY_V2: dict[str, Any] = {
+    "audience_insight": "Busy professionals lose track of small tasks",
+    "audience_tension": "Too many scattered to-dos, not enough time",
+    "campaign_objective": "Drive trial installs",
+    "single_minded_proposition": "DemoTask keeps your day organized",
+    "core_benefit": "Never lose track of your day again",
+    "reason_to_believe": "Organizes tasks into fictional lists",
+    "hook": "Never lose track of your day again.",
+    "visual_thesis": "Clean, confident motion from chaos to clarity",
+    "demonstration_objective": "Show DemoTask organizing a cluttered day",
+    "proof_moments": ["Adding a task in seconds"],
+    "cta": "Try DemoTask today.",
+    "viewer_action": "Install the app",
+    "brand_personality": ["clear", "calm"],
+    "pace": "quick",
+    "energy": "bright",
+    "shot_count_recommendation": 2,
+    "generated_real_balance": 0.5,
+    "raw_ui_tolerance": 0.5,
+    "audio_direction": "upbeat, minimal",
+    "typography_direction": "bold, high-contrast",
+    "visual_continuity_direction": "clean cuts between real UI and lifestyle b-roll",
+}
+
+SCRIPT_V2: dict[str, Any] = {
+    "target_duration": 6,
+    "message_hierarchy": ["organization", "speed", "CTA"],
+    "beats": [
+        {
+            "beat_id": "b1",
+            "start": 0,
+            "end": 3,
+            "channel": "NARRATION",
+            "text": "DemoTask keeps your day organized.",
+        },
+        {
+            "beat_id": "b2",
+            "start": 3,
+            "end": 5,
+            "channel": "NARRATION",
+            "text": "Add a task in seconds.",
+        },
+        {"beat_id": "b3", "start": 5, "end": 6, "channel": "CTA", "text": "Try DemoTask today."},
+    ],
+}
+
+STORYBOARD_V2: dict[str, Any] = {
+    "target_duration": 6,
+    "shots": [
+        {
+            "shot_id": "shot-1",
+            "scene_id": "capture-1",
+            "order": 0,
+            "start": 0,
+            "duration": 3,
+            "purpose": "proof",
+            "visual_source": "ANDROID_DIRECT_CAPTURE",
+            "creative_description": "App UI walkthrough",
+            "capture_instruction": {
+                "capture_id": "capture-1",
+                "package_id": "pk.fictional.demotask",
+                "actions": [{"action": "WAIT", "duration_ms": 300}],
+                "keyboard_policy": "FORBIDDEN",
+                "expected_filenames": ["shot.mp4"],
+            },
+        },
+        {
+            "shot_id": "shot-2",
+            "scene_id": "gen-1",
+            "order": 1,
+            "start": 3,
+            "duration": 3,
+            "purpose": "benefit",
+            "visual_source": "GENERATED_CINEMATIC",
+            "creative_description": "Lifestyle b-roll",
+        },
+    ],
+}
+
 SCRIPTED_OUTPUTS: dict[str, Any] = {
-    "creative-strategy": {
-        "hook": "Never lose track of your day again.",
-        "positioning": "The simple task manager for busy people.",
-        "narrative": ["Show the clutter.", "Show DemoTask organizing it.", "End on the CTA."],
-        "claims": [],
-    },
-    "script": {
-        "target_duration_seconds": 6,
-        "lines": [
-            {
-                "start_seconds": 0,
-                "end_seconds": 3,
-                "text": "DemoTask keeps your day organized.",
-                "mode": "NARRATION",
-            },
-            {
-                "start_seconds": 3,
-                "end_seconds": 5,
-                "text": "Add a task in seconds.",
-                "mode": "NARRATION",
-            },
-            {"start_seconds": 5, "end_seconds": 6, "text": "Try DemoTask today.", "mode": "CTA"},
-        ],
-    },
-    "storyboard": {
-        "target_duration_seconds": 6,
-        "scenes": [
-            {
-                "scene_id": "capture-1",
-                "start_seconds": 0,
-                "end_seconds": 3,
-                "description": "App UI walkthrough",
-                "framing": "Screen capture, portrait",
-                "required_asset_ids": ["capture-1"],
-            },
-            {
-                "scene_id": "gen-1",
-                "start_seconds": 3,
-                "end_seconds": 6,
-                "description": "Lifestyle b-roll",
-                "framing": "Cinematic close-up",
-                "required_asset_ids": ["gen-1"],
-            },
-        ],
-    },
+    "creative-strategy-v2": STRATEGY_V2,
+    "script-v2": SCRIPT_V2,
+    "storyboard-v2": STORYBOARD_V2,
     "asset-plan": {
         "assets": [
             {
@@ -257,7 +303,7 @@ def all_real_handlers(
         CampaignState.EDIT_PLAN: build_edit_plan_handler(services, renderer),
         CampaignState.DRAFT_RENDER: build_draft_render_handler(services, renderer),
         CampaignState.QC: build_qc_handler(services, renderer),
-        CampaignState.REPAIR: build_repair_handler(services, renderer),
+        CampaignState.REPAIR: build_repair_handler(services, router, renderer, worker_jobs),
         CampaignState.FINAL_RENDER: build_final_render_handler(services, renderer),
         CampaignState.EXPORT: build_export_handler(services),
     }
@@ -452,14 +498,14 @@ def test_product_truth_validation_rejects_non_ready_product(services: Services) 
 def test_asset_plan_rejects_unsupported_classifications(tmp_path: Path, services: Services) -> None:
     campaign = make_product_and_campaign(services, tmp_path)
     workspace = services.storage.campaign_workspace(campaign.id)
-    (workspace / "storyboard" / "storyboard.v1.json").write_text(
+    (workspace / "storyboard" / "storyboard-v2.v1.json").write_text(
         json.dumps(
             {
-                "role": "storyboard",
+                "role": "storyboard-v2",
                 "version": 1,
                 "product_truth_snapshot_id": "x",
                 "product_truth_checksum": "a" * 64,
-                "output": SCRIPTED_OUTPUTS["storyboard"],
+                "output": SCRIPTED_OUTPUTS["storyboard-v2"],
             }
         )
     )
@@ -507,14 +553,14 @@ def test_asset_plan_request_gives_the_ai_the_real_storyboard_scene_ids(
     campaign = make_product_and_campaign(services, tmp_path)
     workspace = services.storage.campaign_workspace(campaign.id)
     seed_apk(services, campaign.id)
-    (workspace / "storyboard" / "storyboard.v1.json").write_text(
+    (workspace / "storyboard" / "storyboard-v2.v1.json").write_text(
         json.dumps(
             {
-                "role": "storyboard",
+                "role": "storyboard-v2",
                 "version": 1,
                 "product_truth_snapshot_id": "x",
                 "product_truth_checksum": "a" * 64,
-                "output": SCRIPTED_OUTPUTS["storyboard"],
+                "output": SCRIPTED_OUTPUTS["storyboard-v2"],
             }
         )
     )

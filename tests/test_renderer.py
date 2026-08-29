@@ -93,6 +93,52 @@ def fixture_spec(text: str = "Keep your proof organized") -> EditSpec:
     )
 
 
+def test_device_frame_composition_renders_a_real_mp4(tmp_path: Path) -> None:
+    workspace = tmp_path / "campaign"
+    (workspace / "generated").mkdir(parents=True)
+    create_video(workspace / "generated" / "fixture.mp4")
+    spec = EditSpec.model_validate(
+        {
+            "campaign_id": "fixture",
+            "clips": [
+                {
+                    "source": "generated/fixture.mp4",
+                    "timeline_start_seconds": 0,
+                    "source_in_seconds": 0,
+                    "source_out_seconds": 6,
+                    "composition_mode": "DEVICE_FRAME",
+                    "device_frame_scale": 0.7,
+                    "device_frame_background": "#101014",
+                    "device_frame_shadow": True,
+                    "device_frame_corner_radius": 60,
+                }
+            ],
+            "overlays": [
+                {
+                    "text": "Real DEVICE_FRAME compositing",
+                    "start_seconds": 0.5,
+                    "end_seconds": 4,
+                    "position": "TOP",
+                    "alignment": "left",
+                    "font_size": 26,
+                }
+            ],
+            "output_profile": {
+                "aspect_ratio": "9:16",
+                "duration_seconds": 6,
+                "width": 360,
+                "height": 640,
+            },
+            "output_path": "renders/final/device-frame.mp4",
+        }
+    )
+    result = FFmpegRenderer().render(spec, workspace)
+    assert result.codec == "h264"
+    assert (result.width, result.height) == (360, 640)
+    assert result.duration_seconds == pytest.approx(6, abs=0.1)
+    assert result.output_path.is_file()
+
+
 def test_deterministic_fixture_renders_valid_mp4_with_audio(tmp_path: Path) -> None:
     workspace = tmp_path / "campaign"
     (workspace / "generated").mkdir(parents=True)

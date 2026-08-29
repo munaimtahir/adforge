@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from adforge.creative_quality import CreativeStrategy2, ScriptPlan2, Storyboard2
 from adforge.models import Campaign, LedgerEvent, ProductTruthSnapshot
 from adforge.product_truth import ProductTruthService
 from adforge.providers import ProviderExecutor, ProviderRequest, ReasoningProvider
@@ -150,7 +151,7 @@ class ProductTruthQCOutput(StructuredOutput):
     violations: list[str] = Field(default_factory=list)
 
 
-ROLE_MODELS: dict[str, type[StructuredOutput]] = {
+ROLE_MODELS: dict[str, type[BaseModel]] = {
     "campaign-director": CampaignDirection,
     "creative-strategy": CreativeStrategy,
     "script": ScriptOutput,
@@ -160,6 +161,13 @@ ROLE_MODELS: dict[str, type[StructuredOutput]] = {
     "generation-prompt": GenerationPromptOutput,
     "edit-director": EditDirectionOutput,
     "product-truth-qc": ProductTruthQCOutput,
+    # Creative Quality 2.0 -- the real, production-wired strategy/script/storyboard
+    # roles. Kept in the same generic role registry/dispatch as V1 so every existing
+    # AI-provider, persistence, versioning, and Product Truth claim-gate mechanism in
+    # `CreativePipeline` applies unchanged; only the output contract is typed CQ2.
+    "creative-strategy-v2": CreativeStrategy2,
+    "script-v2": ScriptPlan2,
+    "storyboard-v2": Storyboard2,
 }
 
 ROLE_DIRECTORIES = {
@@ -172,6 +180,9 @@ ROLE_DIRECTORIES = {
     "generation-prompt": "asset-plan",
     "edit-director": "edit",
     "product-truth-qc": "qc",
+    "creative-strategy-v2": "strategy",
+    "script-v2": "script",
+    "storyboard-v2": "storyboard",
 }
 
 ROLE_INSTRUCTIONS = {
@@ -184,7 +195,40 @@ ROLE_INSTRUCTIONS = {
     "generation-prompt": "Write one provider-ready media prompt with constraints.",
     "edit-director": "Specify deterministic pacing, transitions, text, and audio intent.",
     "product-truth-qc": "Check every supplied claim against Product Truth.",
+    "creative-strategy-v2": (
+        "Produce a full Creative Quality 2.0 advertising strategy: audience insight and "
+        "tension, objective, single-minded proposition, benefit, reason to believe, hook, "
+        "visual thesis, demonstration objective, proof moments, CTA, brand personality, "
+        "pace/energy, a recommended shot count, the generated-vs-real footage balance, "
+        "raw-UI tolerance, avoidances, claim boundaries, audio direction, typography "
+        "direction, and visual continuity direction."
+    ),
+    "script-v2": (
+        "Write a Creative Quality 2.0 script as timed beats across distinct channels "
+        "(NARRATION, OVERLAY, PRODUCT_UI, SOUND_DESIGN, SILENCE, CTA). Never repeat the "
+        "same wording across narration/CTA and overlay -- each channel must say something "
+        "the others do not."
+    ),
+    "storyboard-v2": (
+        "Create a Creative Quality 2.0 storyboard: contiguous shots with unique canonical "
+        "shot_id/scene_id, explicit visual source, purpose, composition intent, typography "
+        "intent, transitions, capture instruction (for ANDROID_DIRECT_CAPTURE/"
+        "ANDROID_DEVICE_COMPOSITE shots), and keyboard policy."
+    ),
 }
+
+
+def latest_role_output(services: Services, campaign_id: str, role: str) -> BaseModel | None:
+    """Shared by `campaign_stages.py` and `qc.py`: load the latest persisted
+    output for a pipeline role, whether a V1 or Creative Quality 2.0 role.
+    """
+    workspace = services.storage.campaign_workspace(campaign_id)
+    directory = workspace / ROLE_DIRECTORIES[role]
+    versions = sorted(directory.glob(f"{role}.v*.json"))
+    if not versions:
+        return None
+    payload = json.loads(versions[-1].read_text())
+    return ROLE_MODELS[role].model_validate(payload["output"])
 
 
 class CreativePipeline:
@@ -224,7 +268,7 @@ class CreativePipeline:
         *,
         target_duration_seconds: float = 20,
         additional_context: dict[str, Any] | None = None,
-    ) -> StructuredOutput:
+    ) -> BaseModel:
         request = self.build_request(
             role,
             campaign,
@@ -243,7 +287,7 @@ class CreativePipeline:
         campaign: Campaign,
         snapshot: ProductTruthSnapshot,
         output: dict[str, Any],
-    ) -> StructuredOutput:
+    ) -> BaseModel:
         parsed = self._model(role).model_validate(output)
         self._validate_claims(parsed, snapshot)
         self._validate_timing(parsed)
@@ -275,7 +319,7 @@ class CreativePipeline:
         )
         return parsed
 
-    def _model(self, role: str) -> type[StructuredOutput]:
+    def _model(self, role: str) -> type[BaseModel]:
         try:
             return ROLE_MODELS[role]
         except KeyError as exc:
@@ -303,11 +347,24 @@ class CreativePipeline:
             base["target_duration_seconds"] = target_duration_seconds
         if role in {"asset-plan", "product-truth-qc"}:
             base["demo_workflows"] = truth.get("demo_workflows", [])
+        if role in {"creative-strategy-v2", "script-v2", "storyboard-v2"}:
+            base["campaign_objective"] = campaign.brief
+            base["audiences"] = truth.get("audiences", [])
+            base["known_limitations"] = truth.get("known_limitations", [])
+            base["target_duration_seconds"] = target_duration_seconds
+            base["format"] = {
+                "aspect_ratio": "9:16",
+                "target_duration_seconds": target_duration_seconds,
+            }
+            base["available_product_assets"] = truth.get("demo_workflows", [])
+            base["creative_constraints"] = {
+                "prohibited_claims": truth["prohibited_claims"],
+                "known_limitations": truth.get("known_limitations", []),
+                "privacy_claims": truth.get("privacy_claims", []),
+            }
         return base
 
-    def _validate_claims(
-        self, output: StructuredOutput, snapshot: ProductTruthSnapshot
-    ) -> None:
+    def _validate_claims(self, output: BaseModel, snapshot: ProductTruthSnapshot) -> None:
         claims: list[str] = []
         if isinstance(output, (CampaignDirection, CreativeStrategy, EditDirectionOutput)):
             claims.extend(output.claims)
@@ -317,11 +374,13 @@ class CreativePipeline:
             claims.extend(claim for scene in output.scenes for claim in scene.claims)
         if isinstance(output, ProductTruthQCOutput):
             claims.extend(output.claims_checked)
+        if isinstance(output, ScriptPlan2):
+            claims.extend(beat.claim for beat in output.beats if beat.claim)
         for claim in claims:
             self.truth_service.validate_claim(snapshot, claim)
 
     @staticmethod
-    def _validate_timing(output: StructuredOutput) -> None:
+    def _validate_timing(output: BaseModel) -> None:
         intervals: list[tuple[float, float]] = []
         target: float | None = None
         if isinstance(output, ScriptOutput):
@@ -330,6 +389,9 @@ class CreativePipeline:
         elif isinstance(output, StoryboardOutput):
             intervals = [(scene.start_seconds, scene.end_seconds) for scene in output.scenes]
             target = output.target_duration_seconds
+        # CreativeStrategy2/ScriptPlan2/Storyboard2 already self-enforce contiguous,
+        # gap-free timing via their own pydantic model_validators (see
+        # `creative_quality.py`); nothing further to check here for CQ2 roles.
         if not intervals or target is None:
             return
         ordered = sorted(intervals)

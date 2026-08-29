@@ -32,6 +32,11 @@ class TransitionSpec(BaseModel):
     duration_seconds: float = Field(default=0, ge=0, le=1)
 
 
+class CompositionMode(StrEnum):
+    RAW_FULL_SCREEN = "RAW_FULL_SCREEN"
+    DEVICE_FRAME = "DEVICE_FRAME"
+
+
 class ClipSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -42,6 +47,11 @@ class ClipSpec(BaseModel):
     fit: FitMode = FitMode.COVER
     transition_in: TransitionSpec = Field(default_factory=TransitionSpec)
     transition_out: TransitionSpec = Field(default_factory=TransitionSpec)
+    composition_mode: CompositionMode = CompositionMode.RAW_FULL_SCREEN
+    device_frame_scale: float = Field(default=0.86, gt=0, le=1)
+    device_frame_background: str = Field(default="#0B0B0F", pattern=r"^#[0-9A-Fa-f]{6}$")
+    device_frame_shadow: bool = True
+    device_frame_corner_radius: int = Field(default=54, ge=0, le=160)
 
     @model_validator(mode="after")
     def valid_trim(self) -> ClipSpec:
@@ -59,9 +69,11 @@ class TextOverlay(BaseModel):
     start_seconds: float = Field(ge=0)
     end_seconds: float = Field(gt=0)
     position: Literal["TOP", "CENTER", "BOTTOM"] = "CENTER"
+    alignment: Literal["left", "center", "right"] = "center"
     font_size: int = Field(default=64, ge=12, le=180)
     color: str = Field(default="white", pattern=r"^[A-Za-z0-9#]{3,20}$")
     background: bool = False
+    role: str | None = None
 
     @model_validator(mode="after")
     def valid_interval(self) -> TextOverlay:
@@ -294,16 +306,6 @@ class FFmpegRenderer(Renderer):
         filters: list[str] = []
         ordered = sorted(spec.clips, key=lambda item: item.timeline_start_seconds)
         for index, clip in enumerate(ordered):
-            if clip.fit == FitMode.COVER:
-                geometry = (
-                    f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-                    f"crop={width}:{height}"
-                )
-            else:
-                geometry = (
-                    f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                    f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
-                )
             effects: list[str] = []
             if clip.transition_in.type == "FADE" and clip.transition_in.duration_seconds:
                 effects.append(f"fade=t=in:st=0:d={clip.transition_in.duration_seconds}")
@@ -311,11 +313,31 @@ class FFmpegRenderer(Renderer):
                 start = max(0, clip.duration_seconds - clip.transition_out.duration_seconds)
                 effects.append(f"fade=t=out:st={start}:d={clip.transition_out.duration_seconds}")
             suffix = "," + ",".join(effects) if effects else ""
-            filters.append(
-                f"[{index}:v]trim=start={clip.source_in_seconds}:end={clip.source_out_seconds},"
-                f"setpts=PTS-STARTPTS,{geometry},setsar=1,fps={spec.output_profile.fps},"
-                f"format=yuv420p{suffix}[v{index}]"
+            trim = (
+                f"trim=start={clip.source_in_seconds}:end={clip.source_out_seconds},"
+                "setpts=PTS-STARTPTS"
             )
+            if clip.composition_mode == CompositionMode.DEVICE_FRAME:
+                filters.extend(
+                    self._device_frame_chain(
+                        clip, index, trim, suffix, width, height, spec.output_profile.fps
+                    )
+                )
+            else:
+                if clip.fit == FitMode.COVER:
+                    geometry = (
+                        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+                        f"crop={width}:{height}"
+                    )
+                else:
+                    geometry = (
+                        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
+                    )
+                filters.append(
+                    f"[{index}:v]{trim},{geometry},setsar=1,fps={spec.output_profile.fps},"
+                    f"format=yuv420p{suffix}[v{index}]"
+                )
         joined = "".join(f"[v{index}]" for index in range(clip_count))
         filters.append(f"{joined}concat=n={clip_count}:v=1:a=0[vbase]")
         video_label = "vbase"
@@ -327,11 +349,16 @@ class FFmpegRenderer(Renderer):
             text_path.write_text(overlay.text)
             next_label = f"vtext{index}"
             y = {"TOP": "h*0.12", "CENTER": "(h-text_h)/2", "BOTTOM": "h*0.82"}[overlay.position]
+            x = {
+                "left": "w*0.06",
+                "center": "(w-text_w)/2",
+                "right": "w-text_w-w*0.06",
+            }[overlay.alignment]
             box = ":box=1:boxcolor=black@0.65:boxborderw=18" if overlay.background else ""
             filters.append(
                 f"[{video_label}]drawtext=fontfile='{self._escape(self.font_path)}':"
                 f"textfile='{self._escape(text_path)}':fontcolor={overlay.color}:"
-                f"fontsize={overlay.font_size}:x=(w-text_w)/2:y={y}{box}:"
+                f"fontsize={overlay.font_size}:x={x}:y={y}{box}:"
                 f"enable='between(t,{overlay.start_seconds},{overlay.end_seconds})'"
                 f"[{next_label}]"
             )
@@ -372,6 +399,69 @@ class FFmpegRenderer(Renderer):
             )
             audio_label = "aout"
         return filters, video_label, audio_label
+
+    @staticmethod
+    def _rounded_mask_expr(w: int, h: int, r: int) -> str:
+        """Per-pixel alpha expression for a rounded-rect mask: 0 in the four
+        corner cutouts outside the radius, 255 (opaque) everywhere else.
+        """
+        return (
+            f"if(lt(X,{r})*lt(Y,{r})*gt(hypot({r}-X,{r}-Y),{r}),0,"
+            f"if(gt(X,{w}-{r})*lt(Y,{r})*gt(hypot(X-({w}-{r}),{r}-Y),{r}),0,"
+            f"if(lt(X,{r})*gt(Y,{h}-{r})*gt(hypot({r}-X,Y-({h}-{r})),{r}),0,"
+            f"if(gt(X,{w}-{r})*gt(Y,{h}-{r})*gt(hypot(X-({w}-{r}),Y-({h}-{r})),{r}),0,255))))"
+        )
+
+    def _device_frame_chain(
+        self,
+        clip: ClipSpec,
+        index: int,
+        trim: str,
+        suffix: str,
+        width: int,
+        height: int,
+        fps: int,
+    ) -> list[str]:
+        """Real DEVICE_FRAME compositing: the actual captured/generated clip is
+        scaled down, rounded-corner masked, drop-shadowed, and centered on a
+        solid-color canvas -- a genuine device presentation built entirely from
+        filter primitives (no frame PNG asset). The clip's own pixels remain
+        untouched; nothing here fabricates UI content.
+        """
+
+        def even(value: float) -> int:
+            rounded = int(round(value))
+            return max(2, rounded - (rounded % 2))
+
+        scaled_w = even(width * clip.device_frame_scale)
+        scaled_h = even(height * clip.device_frame_scale)
+        radius = min(clip.device_frame_corner_radius, scaled_w // 2, scaled_h // 2)
+        duration = clip.duration_seconds
+        filters = [
+            f"color=c={clip.device_frame_background}:s={width}x{height}:d={duration}[bg{index}]"
+        ]
+        base_label = f"bg{index}"
+        if clip.device_frame_shadow:
+            pad = 18
+            shadow_w, shadow_h = scaled_w + pad * 2, scaled_h + pad * 2
+            shadow_radius = min(radius + pad, shadow_w // 2, shadow_h // 2)
+            filters.append(
+                f"color=c=black:s={shadow_w}x{shadow_h}:d={duration},format=rgba,"
+                f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
+                f"a='{self._rounded_mask_expr(shadow_w, shadow_h, shadow_radius)}',"
+                f"colorchannelmixer=aa=0.5[shadow{index}]"
+            )
+            filters.append(f"[{base_label}][shadow{index}]overlay=x=(W-w)/2:y=(H-h)/2+16[bgsh{index}]")
+            base_label = f"bgsh{index}"
+        filters.append(
+            f"[{index}:v]{trim},scale={scaled_w}:{scaled_h}:force_original_aspect_ratio=increase,"
+            f"crop={scaled_w}:{scaled_h},setsar=1,fps={fps},format=rgba,"
+            f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
+            f"a='{self._rounded_mask_expr(scaled_w, scaled_h, radius)}'{suffix}[dev{index}]"
+        )
+        filters.append(f"[{base_label}][dev{index}]overlay=x=(W-w)/2:y=(H-h)/2[vov{index}]")
+        filters.append(f"[vov{index}]format=yuv420p[v{index}]")
+        return filters
 
     @staticmethod
     def _path(workspace: Path, relative: str, *, require_file: bool = True) -> Path:

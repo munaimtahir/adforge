@@ -8,6 +8,16 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
+from adforge.creative import latest_role_output
+from adforge.creative_quality import (
+    CreativeQCSignal,
+    CreativeStrategy2,
+    ScriptChannel,
+    ScriptPlan2,
+    Storyboard2,
+    analyze_creative_qc,
+    duplicate_text_pairs,
+)
 from adforge.models import (
     Campaign,
     CampaignState,
@@ -20,6 +30,8 @@ from adforge.orchestrator import Orchestrator
 from adforge.product_truth import ClaimValidationError, ProductTruthService
 from adforge.renderer import EditSpec, FFmpegRenderer, RenderError
 from adforge.services import Services
+
+CQ2_CODE_PREFIX = "CQ2:"
 
 
 class Severity(StrEnum):
@@ -46,6 +58,100 @@ class QCHook(Protocol):
     def inspect(
         self, campaign: Campaign, render: Render, spec: EditSpec
     ) -> list[QCFinding]: ...
+
+
+class CreativeQCHook:
+    """Advertising QC 2.0: the real QC stage's creative signal source.
+
+    Runs `analyze_creative_qc` (raw-UI fraction, shot variety, product proof, CTA
+    hold) against the campaign's persisted Strategy/Script/Storyboard 2.0, plus two
+    measurable checks against the actual rendered media (duplicate spoken/overlay
+    text, and keyboard exposure on FORBIDDEN-policy shots). Every signal maps to a
+    `QCFinding` the existing `QCService`/`RepairPlanner` machinery already
+    understands; `code` is prefixed `CQ2:<signal>` so `build_repair_handler` can
+    recover the CQ2 repair-target mapping from an ordinary `QCFinding`.
+    """
+
+    def __init__(self, services: Services, renderer: FFmpegRenderer) -> None:
+        self.services = services
+        self.renderer = renderer
+
+    def inspect(self, campaign: Campaign, render: Render, spec: EditSpec) -> list[QCFinding]:
+        storyboard = latest_role_output(self.services, campaign.id, "storyboard-v2")
+        if not isinstance(storyboard, Storyboard2):
+            return []
+        strategy = latest_role_output(self.services, campaign.id, "creative-strategy-v2")
+        script = latest_role_output(self.services, campaign.id, "script-v2")
+        strategy = strategy if isinstance(strategy, CreativeStrategy2) else None
+        script = script if isinstance(script, ScriptPlan2) else None
+
+        result = analyze_creative_qc(storyboard, strategy=strategy, script=script)
+        findings = [
+            QCFinding(
+                code=f"{CQ2_CODE_PREFIX}{signal.rule_id.value}",
+                severity=Severity(signal.severity),
+                message=signal.evidence,
+                asset_id=signal.affected_shot_ids[0] if signal.affected_shot_ids else None,
+            )
+            for signal in result.signals
+        ]
+        if script is not None:
+            findings.extend(self._duplicate_text_findings(script))
+        findings.extend(self._keyboard_exposure_findings(campaign, storyboard))
+        return findings
+
+    @staticmethod
+    def _duplicate_text_findings(script: ScriptPlan2) -> list[QCFinding]:
+        spoken = [
+            (f"{beat.channel.value}:{beat.beat_id}", beat.text)
+            for beat in script.beats
+            if beat.channel in {ScriptChannel.NARRATION, ScriptChannel.CTA}
+        ]
+        overlay = [
+            (f"{beat.channel.value}:{beat.beat_id}", beat.text)
+            for beat in script.beats
+            if beat.channel == ScriptChannel.OVERLAY
+        ]
+        duplicates = duplicate_text_pairs(spoken + overlay)
+        return [
+            QCFinding(
+                code=f"{CQ2_CODE_PREFIX}{CreativeQCSignal.DUPLICATE_TEXT.value}",
+                severity=Severity.ADVISORY,
+                message=f"'{first}' and '{second}' say the same thing in different channels",
+            )
+            for first, second in duplicates
+        ]
+
+    def _keyboard_exposure_findings(
+        self, campaign: Campaign, storyboard: Storyboard2
+    ) -> list[QCFinding]:
+        forbidden_shots = [
+            shot
+            for shot in storyboard.shots
+            if shot.capture_instruction is not None
+            and shot.keyboard_policy.value == "FORBIDDEN"
+        ]
+        if not forbidden_shots:
+            return []
+        capture_assets = [
+            asset
+            for asset in self.services.assets.find_by("campaign_id", campaign.id)
+            if asset.asset_type == "app_capture_video"
+        ]
+        exposed = [asset for asset in capture_assets if asset.provenance.get("keyboard_visible")]
+        if not exposed:
+            return []
+        return [
+            QCFinding(
+                code=f"{CQ2_CODE_PREFIX}{CreativeQCSignal.KEYBOARD_EXPOSURE.value}",
+                severity=Severity.BLOCKER,
+                message=(
+                    f"shot {forbidden_shots[0].shot_id} forbids the keyboard but the "
+                    "captured recording shows it visible"
+                ),
+                asset_id=exposed[0].id,
+            )
+        ]
 
 
 class QCService:
