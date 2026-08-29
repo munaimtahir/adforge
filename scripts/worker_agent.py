@@ -422,13 +422,31 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
         recording_seconds = 10
         recording_ok = False
         for _capture_attempt in range(1, 4):
+            _adb(sdk["adb"], serial, "shell", "rm", "-f", remote_video, timeout=15)
+            started_at = time.monotonic()
+            # `screenrecord` must be backgrounded with `nohup` -- a synchronous
+            # `adb shell screenrecord ...` call *can* return a well-formed but
+            # near-empty MP4 (found live: 1 frame, no duration) because Android's
+            # encoder only emits a frame when SurfaceFlinger composites a change,
+            # and this app's screen has nothing animating on it while idle. Real
+            # on-screen touches during the recording (below) are what actually
+            # produce a valid, playable clip.
             _adb(
-                sdk["adb"], serial, "shell", "rm", "-f", remote_video, timeout=15,
+                sdk["adb"], serial, "shell", "nohup", "screenrecord", "--time-limit",
+                str(recording_seconds), remote_video, ">", "/dev/null", "2>&1", "&",
+                timeout=15,
             )
+            time.sleep(1)
             _adb(
-                sdk["adb"], serial, "shell", "screenrecord", "--time-limit",
-                str(recording_seconds), remote_video, timeout=45,
+                sdk["adb"], serial, "shell", "monkey", "-p", package_id,
+                "--pct-touch", "100", "--pct-motion", "0", "--pct-trackball", "0",
+                "--pct-nav", "0", "--pct-majornav", "0", "--pct-syskeys", "0",
+                "--pct-appswitch", "0", "--pct-anyevent", "0",
+                "-v", "40", "--throttle", "150", timeout=30,
             )
+            remaining = recording_seconds + 2 - (time.monotonic() - started_at)
+            if remaining > 0:
+                time.sleep(remaining)
             _adb(sdk["adb"], serial, "pull", remote_video, str(recording_path), timeout=60)
             recording_ok = _recording_has_real_duration(recording_path, recording_seconds)
             if recording_ok:
