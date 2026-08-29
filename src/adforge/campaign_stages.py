@@ -238,13 +238,16 @@ CLAIM_DISCIPLINE_INSTRUCTION = (
 # TAP without coordinates (a real safety property, not to be loosened), so the
 # fix is telling the model which action name to use, not weakening validation.
 ANDROID_DSL_INSTRUCTION = (
-    "Android capture actions: use TAP or TAP_COORDINATE only when you specify "
-    "exact numeric x/y pixel coordinates within the 1080x1920 capture canvas. "
-    "If you only know an on-screen text label to tap (a button, a list item, a "
-    "field), use TAP_TEXT with `target_text` set and no x/y -- do not use TAP "
-    "with only `target_text`, that combination is invalid. Likewise "
-    "ASSERT_VISIBLE/ASSERT_NOT_VISIBLE take `target_text`, not coordinates. "
-    "TYPE_TEXT requires `text`. WAIT/HOLD require a positive `duration_ms`."
+    "Android capture actions -- each action name requires an exact input shape, "
+    "there is no fallback: TAP, TAP_COORDINATE, and HOLD all require numeric x/y "
+    "pixel coordinates within the 1080x1920 capture canvas (HOLD also needs a "
+    "positive duration_ms) -- never give any of these three only `target_text`. "
+    "SWIPE requires x, y, x2, and y2. If you only know an on-screen text label to "
+    "act on (a button, a list item, a field) rather than its coordinates, use "
+    "TAP_TEXT with `target_text` set and no x/y -- that is the only text-driven "
+    "tap action. ASSERT_VISIBLE/ASSERT_NOT_VISIBLE also take `target_text`, not "
+    "coordinates. TYPE_TEXT requires `text`. WAIT requires a positive "
+    "`duration_ms` and no coordinates or text."
 )
 
 
