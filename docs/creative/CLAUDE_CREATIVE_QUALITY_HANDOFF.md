@@ -5,7 +5,7 @@ Status: **IMPLEMENTATION PARTIALLY COMPLETE — READY FOR CLAUDE PRODUCTION ACCE
 ## A. Repository state
 
 - Starting branch/commit: `main` / `7711f5d`
-- Ending branch/commit: `main` / `fcd18d2` (this handoff document is the only post-implementation commit change)
+- Ending branch/commit: `main` / `bee265c` (implementation commit `fcd18d2`, followed by this handoff commit)
 - Upstream: `origin/main`; local branch is one commit ahead after Codex implementation.
 - Codex left no uncommitted changes before adding this handoff.
 
