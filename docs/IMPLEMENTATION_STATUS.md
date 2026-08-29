@@ -4,8 +4,8 @@ Last updated: 2026-08-29 UTC.
 
 ## Current phase
 
-Phase 19 (real STRATEGY..EXPORT campaign-stage handlers) is complete and deployed
-locally (not yet to production — see below). Before this phase, `CampaignWorker` only
+Phase 19 (real STRATEGY..EXPORT campaign-stage handlers) is complete and deployed to
+production. Before this phase, `CampaignWorker` only
 had real handlers for `APP_CAPTURE` and `ASSET_GENERATION`; every other primary state
 (`PRODUCT_TRUTH_VALIDATION`, `STRATEGY`, `SCRIPT`, `STORYBOARD`, `ASSET_PLAN`,
 `AUDIO_PRODUCTION`, `EDIT_PLAN`, `DRAFT_RENDER`, `QC`, `REPAIR`, `FINAL_RENDER`,
@@ -50,16 +50,32 @@ detail — this is a summary, not a duplicate):**
   running list of commits this session (`bb80b31` through `fa3c1b9` at last count).
   132 tests pass, ruff/mypy clean throughout.
 
+**Update, same session — DemoTask reached a genuine `COMPLETE` (2026-08-29):**
+
+Campaign `a0d5338a-4535-4279-9aff-2746593d5add` finished the entire pipeline for
+real, `PRODUCT_TRUTH_VALIDATION` through `EXPORT`, producing an actual playable
+15s 1080×1920 H.264+AAC MP4 (`renders/final/final.mp4`) with `QCResult.passed=True`
+and zero blockers/advisories — this project's first real (non-fixture) run to reach
+a terminal `COMPLETE` state. Both `flow_generation` jobs were completed by hand
+(real prompts pasted into a real Flow session) per explicit instruction, not
+automated. Getting from there to `EXPORT` surfaced two more real bugs (full detail
+in `BLOCKERS.md`'s "Real DemoTask campaign reached COMPLETE end to end" section):
+`asset-plan`'s AI context never included the storyboard's actual scene ids, so two
+independent AI calls silently drifted on scene naming (`8f2f4b6`); and
+`adb shell screenrecord` returned a well-formed but empty capture on this app's
+static screen because Android's encoder only emits frames on visual change — fixed
+by injecting real on-screen touches during a backgrounded recording (`a4775b8`,
+`09e310a`). Also added the requested worker-job "parameters" UI section (length,
+aspect ratio, a 720p-recommended/360p-acceptable quality note) shown separately
+from the prompt text (`80d955a`). All fixed, tested (138 tests pass), deployed to
+production and re-verified live end to end.
+
 Release verdict remains **ADFORGE v1 — NOT READY** for the canonical Warranty Vault
 campaign specifically (B-001: Product Truth/APK/brand assets still absent — independent
 of everything above, needs real Warranty Vault data, not a technical blocker). No final
-Warranty Vault MP4 was produced. **The DemoTask campaign is one real step from a
-genuine final MP4**: its two `flow_generation` `WorkerJob`s are sitting `FAILED`
-(exhausted automated Flow-automation attempts, expected — see above), exact
-AI-generated prompts already available on the campaign page, waiting on a human to
-paste them into Flow and upload the result (or a `GEMINI_API_KEY`) to complete them —
-everything downstream (Android capture, audio, edit, render, QC, export) is real,
-tested, and already proven to work end to end once assets land.
+Warranty Vault MP4 has been produced. But the underlying pipeline itself is now proven
+end to end against a real, non-fixture campaign — Warranty Vault is blocked on real
+product data, not on any remaining technical gap in the pipeline.
 
 ## Phase ledger
 
@@ -84,7 +100,7 @@ tested, and already proven to work end to end once assets land.
 | 16 — Distributed worker foundation | Complete; real external worker/Android/Flow acceptance blocked | Worker domain/auth/API/UI/agent, real capability health checks, synthetic `synthetic_echo` round trip proven via `tests/test_worker.py` and over real HTTP against a running dev server (register → heartbeat → claim → lease → checksum-validated artifact upload → idempotent complete → `WAITING_FOR_WORKER` auto-resume); see `docs/02-architecture/WORKER_PROTOCOL.md` |
 | 17 — Android/Flow worker pipelines | Implementation complete; real acceptance blocked (B-004/005/006) | `scripts/worker_agent.py` real Android SDK/AVD discovery + capture pipeline and real Flow login/generation pipeline (argument-array-only subprocess calls); server-side lease-gated `GET /api/worker/jobs/{id}/inputs/{filename}`; the `synthetic_echo` round trip additionally proven against live production `https://adforge.vexel.pk` over real public HTTPS; Android SDK discovery and Flow login-state detection verified for real (no mocks) against this VM's actual device-less SDK and the live Flow site; discovered and recorded new blocker B-007 (production Claude/Codex CLI not usable by the `adforge` service account) via the real-invocation health checks introduced in phase 16 |
 | 18 — Campaign → WorkerJob orchestration; real external worker acceptance | Complete; B-002/B-004/B-005 resolved for real; B-007 installation/PATH fixed (auth is the one remaining human action) | `src/adforge/worker_stages.py` wires real `APP_CAPTURE`/`ASSET_GENERATION` handlers into `CampaignWorker`, which is now actually instantiated in `WebContext` for the first time; automatic `WorkerJob` dispatch with durable `WAITING_FOR_WORKER` (never fails the campaign), artifact import on completion, and continued auto-advancement, all with an explicit opt-in manual-handoff fallback (`ADFORGE_MANUAL_HANDOFF_STAGES`); 11 new tests (`tests/test_worker_stages.py`) covering payload correctness, claim matching, no-worker-online waiting, artifact import + auto-resume, duplicate-completion safety, retry/failure, restart persistence, manual fallback, Product Truth gate untouched; deployed to production (commit `4e98ec4`); real second machine `adforge-linux-01` registered and proved the full protocol against production; real `android_capture` WorkerJob executed end to end (real canonical-AVD install/launch/capture, VM-side ffprobe-validated); real lease-crash/reclaim/retry proven live; fixed a real canonical-AVD resolution bug (emulator was booting at `1080x2400` instead of the documented `1080x1920`); fixed a real production bug (a stale `active=True` campaign lease from an earlier session silently blocking all campaign resumption); fixed Claude Code CLI PATH/installation for the `adforge` service account (`sudo npm install -g @anthropic-ai/claude-code`), moving the platform health verdict from `PLATFORM_NOT_READY` to `PLATFORM_DEGRADED` |
-| 19 — Real STRATEGY..EXPORT campaign-stage handlers; campaign engine autonomy | Complete locally; not yet deployed; real (non-fixture) end-to-end acceptance still blocked on B-003/B-006/B-007 | `src/adforge/campaign_stages.py` adds real `StageHandler`s for `PRODUCT_TRUTH_VALIDATION`, `STRATEGY`, `SCRIPT`, `STORYBOARD`, `ASSET_PLAN` (plus its generated `GENERATION_REQUEST.json` dispatch), `AUDIO_PRODUCTION`, `EDIT_PLAN`, `DRAFT_RENDER`, `QC`, `REPAIR`, `FINAL_RENDER`, `EXPORT`, registered in `WebContext` alongside the existing `APP_CAPTURE`/`ASSET_GENERATION` worker handlers — closing the gap where every one of those states had no handler and would immediately `BLOCK`; also fixes `web.py`'s `start`/`resume` routes, which transitioned campaign state but never called `CampaignWorker.run()`, so campaigns could not progress autonomously at all before this. Adds `Campaign.target_duration_seconds` (additive). 4 new tests (`tests/test_campaign_stages.py`) using a scripted offline `ReasoningProvider` (matching the existing `test_providers.py` stubbing convention) drive a full synthetic campaign through every real handler — real FFmpeg render, real audio synthesis, real ffprobe-validated QC, a genuine QC-failure → `REPAIR` → QC-pass recovery cycle — producing an actual playable 1080×1920 MP4 with audio via `CampaignWorker` end to end; 125 tests total pass, ruff and strict mypy clean; commit `bb80b31`. Security-reviewed: no high/medium-confidence findings (all new AI-influenced identifiers are schema-constrained before reaching any filesystem path, no new subprocess calls, no new cross-campaign query). Not yet deployed to production; real acceptance against genuine Claude/Codex/Flow/Android still requires B-007 (production Claude/Codex login) and B-003/B-006 (Flow login) |
+| 19 — Real STRATEGY..EXPORT campaign-stage handlers; campaign engine autonomy | Complete and deployed; real (non-fixture) end-to-end acceptance achieved | `src/adforge/campaign_stages.py` adds real `StageHandler`s for `PRODUCT_TRUTH_VALIDATION`, `STRATEGY`, `SCRIPT`, `STORYBOARD`, `ASSET_PLAN` (plus its generated `GENERATION_REQUEST.json` dispatch), `AUDIO_PRODUCTION`, `EDIT_PLAN`, `DRAFT_RENDER`, `QC`, `REPAIR`, `FINAL_RENDER`, `EXPORT`, registered in `WebContext` alongside the existing `APP_CAPTURE`/`ASSET_GENERATION` worker handlers — closing the gap where every one of those states had no handler and would immediately `BLOCK`; also fixes `web.py`'s `start`/`resume` routes, which transitioned campaign state but never called `CampaignWorker.run()`, so campaigns could not progress autonomously at all before this. Adds `Campaign.target_duration_seconds` (additive). Tests using a scripted offline `ReasoningProvider` (matching the existing `test_providers.py` stubbing convention) drive a full synthetic campaign through every real handler — real FFmpeg render, real audio synthesis, real ffprobe-validated QC, a genuine QC-failure → `REPAIR` → QC-pass recovery cycle. Security-reviewed: no high/medium-confidence findings (all new AI-influenced identifiers are schema-constrained before reaching any filesystem path, no new subprocess calls, no new cross-campaign query). Deployed to production; real acceptance proven for real against genuine Claude/Codex, and against a real Android emulator capture and real manually-completed Flow assets — the DemoTask campaign (`a0d5338a-4535-4279-9aff-2746593d5add`) reached a genuine `COMPLETE` with a real playable final MP4; see `BLOCKERS.md` for the fixes that took it there (`8f2f4b6`, `a4775b8`, `09e310a`, `80d955a`). 138 tests total pass, ruff and strict mypy clean |
 
 ## Phase commits
 
@@ -109,7 +125,7 @@ tested, and already proven to work end to end once assets land.
 | 16 | `b307939` |
 | 17 | `3ca7609` |
 | 18 | `15c3296`, `4e98ec4` |
-| 19 | `bb80b31` |
+| 19 | `bb80b31`, `8f2f4b6`, `a4775b8`, `09e310a`, `80d955a` |
 
 ## Baseline quality commands
 

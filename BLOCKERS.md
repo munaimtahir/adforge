@@ -259,3 +259,65 @@ Also added while building this: real browser-based APK upload for campaign
 creation (commit `20463ab`) -- `apk_path` only ever worked if the file was
 already sitting on the server; there was no way to get it there through the
 browser at all.
+
+## Real DemoTask campaign reached COMPLETE end to end (2026-08-29)
+
+Campaign `a0d5338a-4535-4279-9aff-2746593d5add` finished the full pipeline for
+real -- `PRODUCT_TRUTH_VALIDATION` through `EXPORT` -- producing a genuine
+playable 15s, 1080x1920, H.264+AAC MP4 (`renders/final/final.mp4`, checksum
+`183cd9bc...`), with `QCResult.passed=True` and zero blockers/advisories. This
+is the first real (non-fixture) acceptance run to reach a terminal `COMPLETE`
+state. Per explicit product instruction, Flow browser-automation was never
+attempted for this run: both `flow_generation` jobs were completed by hand
+through the manual-upload UI (real prompts pasted into a real Flow session,
+downloads uploaded back). Two more real bugs surfaced getting the rest of the
+way to `EXPORT`, on top of B-003/B-006/B-007 above:
+
+1. **`asset-plan` never saw the storyboard's real scene ids.** `EDIT_PLAN`
+   failed every scene with `"has no planned asset in ASSET_PLAN"`. Root cause:
+   the `asset-plan` role's AI context never included the storyboard's actual
+   `scene_id` strings, so it invented its own convention (`"scene_01"`)
+   instead of reusing the storyboard's (`"scene_01_hook"`) -- two independent
+   AI calls silently drifted on how they named the same scenes. Fixed by
+   passing the real storyboard scenes into the asset-plan context with an
+   explicit copy-verbatim instruction (commit `8f2f4b6`); this campaign's
+   already-persisted `asset-plan.v1.json` was hand-repaired (positional
+   `scene_0N` -> `scene_0N_<name>` rename -- the classifications and
+   asset-to-scene mapping were already correct, only the id strings differed)
+   since the idempotent asset-plan cache meant the code fix alone wouldn't
+   regenerate it.
+2. **`adb shell screenrecord` produced a well-formed but empty capture on a
+   static screen.** `EDIT_PLAN` then crashed with a bare `KeyError:
+   'duration'` on the imported `app_capture_video` asset. Two layered fixes in
+   `scripts/worker_agent.py`: (a) `FFmpegRenderer.probe()` now raises a clear
+   `RenderError` instead of crashing on the missing dict key when ffprobe
+   can't determine a duration (commit `a4775b8`); (b) the real root cause --
+   Android's `screenrecord` only emits a frame when SurfaceFlinger composites
+   a *change*, and this fictional app's screen has nothing animating on it
+   while idle, so a launch-and-wait capture recorded 1 frame in 10 real
+   seconds -- fixed by backgrounding `screenrecord` with `nohup` and injecting
+   real on-screen touches via `monkey` while it records, then waiting out the
+   full recording window before pulling (commit `09e310a`). Confirmed on the
+   real emulator: idle capture of this app = 1 frame; the same sequence with
+   mid-recording taps = 56 real frames over ~10s.
+
+Also fixed in the same pass: `adb install -r` failing with
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE` when a differently-signed build of the
+same `package_id` is already on the device (leftover from an earlier session)
+-- Android refuses to replace across a signature change regardless of install
+flags; `run_android_capture()` now uninstalls and retries once (commit
+`0172b47`). And the `resume_state`-chaining fix from the section above
+(`f895b48`) was found to be undeployed to production when this run started
+(production was 3 commits behind); redeployed as part of this pass.
+
+Both `flow_generation` scenes in this campaign use the *same* uploaded video
+(identical checksums) -- flagged to the user; explicit decision was to
+continue with the campaign as-is rather than block on a second, distinct
+upload, since the goal of this run was proving the pipeline end to end, not
+final creative quality.
+
+Separately, per direct instruction, the worker-job UI now shows a real,
+visually separate "parameters" section (length, aspect ratio, a fixed
+720p-recommended/360p-acceptable quality note) above the prompt text on any
+open `flow_generation` job card, instead of folding duration/aspect-ratio
+into the same line as the expected filename (commit `80d955a`).
