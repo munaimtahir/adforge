@@ -255,13 +255,21 @@ class FFmpegRenderer(Renderer):
         audio = next((item for item in data["streams"] if item["codec_type"] == "audio"), None)
         if video is None or (expect_audio and audio is None):
             raise RenderError("render is missing required video/audio streams")
+        duration = data["format"].get("duration")
+        if duration is None:
+            raise RenderError(
+                f"ffprobe could not determine a duration for {output} -- the file's "
+                "moov/duration atom is missing or unset, which usually means the "
+                "source video was truncated or never finalized (e.g. a device "
+                "recording pulled before it stopped writing)"
+            )
         return RenderResult(
             output_path=output,
             checksum=sha256_file(output),
             codec=video["codec_name"],
             width=int(video["width"]),
             height=int(video["height"]),
-            duration_seconds=float(data["format"]["duration"]),
+            duration_seconds=float(duration),
             has_audio=audio is not None,
             ffprobe=data,
         )

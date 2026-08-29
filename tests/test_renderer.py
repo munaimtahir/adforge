@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -154,3 +155,34 @@ def test_renderer_reports_missing_source(tmp_path: Path) -> None:
     workspace.mkdir()
     with pytest.raises(RenderError, match="source asset is missing"):
         FFmpegRenderer().render(fixture_spec(), workspace)
+
+
+def test_probe_reports_a_clear_error_instead_of_a_keyerror_when_duration_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test: found live on a real Android screen recording.
+
+    `adb shell screenrecord` can produce a well-formed MP4 container with a
+    valid video stream but no format-level duration atom (e.g. a truncated
+    capture with a single keyframe). ffprobe parses it without error, so the
+    old code crashed with a bare `KeyError: 'duration'` deep inside EDIT_PLAN
+    instead of a diagnosable error.
+    """
+    clip = tmp_path / "clip.mp4"
+    create_video(clip, duration=1)
+
+    real_run = subprocess.run
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if command[0].endswith("ffprobe"):
+            result = real_run(command, **kwargs)  # type: ignore[arg-type]
+            payload = json.loads(result.stdout)
+            del payload["format"]["duration"]
+            return subprocess.CompletedProcess(
+                command, result.returncode, json.dumps(payload), result.stderr
+            )
+        return real_run(command, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(RenderError, match="could not determine a duration"):
+        FFmpegRenderer().probe(clip, expect_audio=False)

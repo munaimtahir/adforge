@@ -297,6 +297,36 @@ def _adb(adb_path: str, serial: str, *args: str, timeout: float = 30, text: bool
     return result
 
 
+def _recording_has_real_duration(path: Path, expected_seconds: int) -> bool:
+    """Best-effort validation that `adb shell screenrecord` actually captured video.
+
+    Found live: on this emulator, `screenrecord` sometimes returns success and
+    writes a well-formed MP4 container with a single keyframe and no duration
+    atom -- ffprobe parses it fine, but it holds under a second of real content.
+    Downstream EDIT_PLAN rendering needs a real ~10s clip, so catch this here
+    instead of uploading a broken artifact as though the capture succeeded.
+    Skips validation (returns True) if ffprobe isn't installed on this worker
+    host -- this agent's dependencies are deliberately minimal.
+    """
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return True
+    if not path.is_file() or path.stat().st_size == 0:
+        return False
+    result = subprocess.run(  # noqa: S603 - resolved executable, fixed argv
+        [ffprobe, "-v", "error", "-show_entries", "format=duration", "-of",
+         "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, check=False, text=True, timeout=30,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return False
+    try:
+        duration = float(result.stdout.strip())
+    except ValueError:
+        return False
+    return duration >= expected_seconds * 0.5
+
+
 def start_emulator(sdk: dict[str, Any], avd_name: str) -> subprocess.Popen[bytes]:
     return subprocess.Popen(  # noqa: S603 - resolved executable, fixed argv
         [sdk["emulator"], "-avd", avd_name, "-no-audio", "-no-boot-anim"],
@@ -389,12 +419,28 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
 
         remote_video = "/sdcard/adforge-capture.mp4"
         recording_path = job_dir / "recording.mp4"
-        _adb(
-            sdk["adb"], serial, "shell", "screenrecord", "--time-limit", "10", remote_video,
-            timeout=45,
-        )
-        _adb(sdk["adb"], serial, "pull", remote_video, str(recording_path), timeout=60)
-        _adb(sdk["adb"], serial, "shell", "rm", remote_video, timeout=15)
+        recording_seconds = 10
+        recording_ok = False
+        for _capture_attempt in range(1, 4):
+            _adb(
+                sdk["adb"], serial, "shell", "rm", "-f", remote_video, timeout=15,
+            )
+            _adb(
+                sdk["adb"], serial, "shell", "screenrecord", "--time-limit",
+                str(recording_seconds), remote_video, timeout=45,
+            )
+            _adb(sdk["adb"], serial, "pull", remote_video, str(recording_path), timeout=60)
+            recording_ok = _recording_has_real_duration(recording_path, recording_seconds)
+            if recording_ok:
+                break
+        _adb(sdk["adb"], serial, "shell", "rm", "-f", remote_video, timeout=15)
+        if not recording_ok:
+            client.fail(
+                job_id, "RETRYABLE",
+                "screenrecord produced a truncated/empty recording.mp4 on every "
+                f"attempt (checked with ffprobe, wanted ~{recording_seconds}s)",
+            )
+            return
 
         diagnostics = _adb(
             sdk["adb"], serial, "shell", "dumpsys", "package", package_id, timeout=30
