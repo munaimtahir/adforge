@@ -425,6 +425,41 @@ def _dsl_type_text(value: str) -> str:
     return value.replace(" ", "%s")
 
 
+def _poll_for_text(
+    adb_path: str, serial: str, target_text: str, timeout_seconds: float, job_dir: Path
+) -> tuple[int, int, int, int] | None:
+    """Poll the UI dump for `target_text` until it appears or `timeout_seconds`
+    elapses, instead of checking exactly once.
+
+    Found live: a cold-started app (first launch after `pm clear`, or right
+    after `adb shell monkey -c LAUNCHER` on a freshly booted emulator) can
+    still be on its splash screen well past a short fixed `WAIT`, so a single
+    immediate UI-dump check fails even though the DSL action already declares
+    a `timeout_seconds` for exactly this. That field was parsed onto
+    `AndroidAction` but never actually read here -- honor it now.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        bounds = _ui_bounds_for_text(_ui_dump(adb_path, serial, job_dir), target_text)
+        if bounds is not None or time.monotonic() >= deadline:
+            return bounds
+        time.sleep(0.5)
+
+
+def _poll_for_absence(
+    adb_path: str, serial: str, target_text: str, timeout_seconds: float, job_dir: Path
+) -> bool:
+    """Mirror of `_poll_for_text` for ASSERT_NOT_VISIBLE: poll until the text
+    is gone or the timeout elapses, so a still-animating dismissal doesn't
+    fail an assertion that would pass a moment later."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        bounds = _ui_bounds_for_text(_ui_dump(adb_path, serial, job_dir), target_text)
+        if bounds is None or time.monotonic() >= deadline:
+            return bounds is None
+        time.sleep(0.5)
+
+
 def execute_capture_actions(
     adb_path: str, serial: str, actions: list[dict[str, Any]], job_dir: Path
 ) -> dict[str, Any]:
@@ -443,6 +478,7 @@ def execute_capture_actions(
         target_text = raw_action.get("target_text")
         duration_ms = int(raw_action.get("duration_ms") or 300)
         expected_state = raw_action.get("expected_state")
+        timeout_seconds = float(raw_action.get("timeout_seconds") or 15)
         if action == "WAIT":
             time.sleep(duration_ms / 1000)
         elif action in ("TAP", "TAP_COORDINATE"):
@@ -479,7 +515,7 @@ def execute_capture_actions(
             if x is not None and y is not None:
                 _adb(adb_path, serial, "shell", "input", "tap", str(x), str(y), timeout=15)
         elif action == "TAP_TEXT":
-            bounds = _ui_bounds_for_text(_ui_dump(adb_path, serial, job_dir), target_text or "")
+            bounds = _poll_for_text(adb_path, serial, target_text or "", timeout_seconds, job_dir)
             if bounds is None:
                 raise AndroidDSLError(f"TAP_TEXT could not find element with text {target_text!r}")
             cx, cy = (bounds[0] + bounds[2]) // 2, (bounds[1] + bounds[3]) // 2
@@ -493,12 +529,11 @@ def execute_capture_actions(
             destination.write_bytes(shot.stdout)
             screenshots.append(destination.name)
         elif action == "ASSERT_VISIBLE":
-            xml_text = _ui_dump(adb_path, serial, job_dir)
-            if _ui_bounds_for_text(xml_text, target_text or "") is None:
+            bounds = _poll_for_text(adb_path, serial, target_text or "", timeout_seconds, job_dir)
+            if bounds is None:
                 raise AndroidDSLError(f"ASSERT_VISIBLE failed: {target_text!r} not found")
         elif action == "ASSERT_NOT_VISIBLE":
-            xml_text = _ui_dump(adb_path, serial, job_dir)
-            if _ui_bounds_for_text(xml_text, target_text or "") is not None:
+            if not _poll_for_absence(adb_path, serial, target_text or "", timeout_seconds, job_dir):
                 raise AndroidDSLError(f"ASSERT_NOT_VISIBLE failed: {target_text!r} is visible")
         elif action == "ASSERT_PACKAGE":
             if expected_state:
