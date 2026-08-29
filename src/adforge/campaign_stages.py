@@ -256,7 +256,12 @@ STORYBOARD_STRUCTURE_INSTRUCTION = (
     "share one scene_id, even if they are part of the same narrative beat. If "
     "you want two shots that feel like one continuous moment, give them "
     "adjacent, contiguous start/duration values and two distinct scene_ids "
-    "(e.g. `scene-hook-1` and `scene-hook-2`), not the same scene_id twice."
+    "(e.g. `scene-hook-1` and `scene-hook-2`), not the same scene_id twice. "
+    "If composition_intent.mode is DEVICE_FRAME, you must also set "
+    "composition_intent.frame_asset to a short descriptive placeholder id such "
+    "as `phone-frame-default` -- the actual device frame is rendered "
+    "procedurally (rounded corners, drop shadow, no real image file), so this "
+    "value is a label, not a path; any non-empty id satisfies it."
 )
 
 
