@@ -233,6 +233,20 @@ CLAIM_DISCIPLINE_INSTRUCTION = (
     "paraphrasing one."
 )
 
+# Found live: providers reliably emit `{"action": "TAP", "target_text": "..."}`
+# with no x/y when they mean "tap this label" -- the schema correctly rejects
+# TAP without coordinates (a real safety property, not to be loosened), so the
+# fix is telling the model which action name to use, not weakening validation.
+ANDROID_DSL_INSTRUCTION = (
+    "Android capture actions: use TAP or TAP_COORDINATE only when you specify "
+    "exact numeric x/y pixel coordinates within the 1080x1920 capture canvas. "
+    "If you only know an on-screen text label to tap (a button, a list item, a "
+    "field), use TAP_TEXT with `target_text` set and no x/y -- do not use TAP "
+    "with only `target_text`, that combination is invalid. Likewise "
+    "ASSERT_VISIBLE/ASSERT_NOT_VISIBLE take `target_text`, not coordinates. "
+    "TYPE_TEXT requires `text`. WAIT/HOLD require a positive `duration_ms`."
+)
+
 
 def build_strategy_handler(services: Services, router: ProviderRouter) -> StageHandler:
     """The real STRATEGY stage: produces and persists Creative Quality 2.0's
@@ -302,6 +316,7 @@ def build_storyboard_handler(services: Services, router: ProviderRouter) -> Stag
             task.id, campaign.target_duration_seconds,
             additional_context={
                 "claim_discipline": CLAIM_DISCIPLINE_INSTRUCTION,
+                "android_dsl": ANDROID_DSL_INSTRUCTION,
                 "strategy": strategy.model_dump(mode="json"),
                 "script": script.model_dump(mode="json"),
             },
