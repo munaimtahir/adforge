@@ -138,3 +138,11 @@ git diff --check
 
 This status is intentionally conservative. No integration is considered proven by
 the presence of a binary alone, and no mock is acceptance evidence.
+
+## Creative Quality 2.0 Codex sprint (2026-08-29)
+
+Implementation is additive and ready for independent Claude acceptance. Typed CQ2
+contracts, canonical-ID validation, Android action DSL validation/execution boundary,
+creative planning QC, targeted repair mapping, and explicit master/delivery render
+controls are implemented and locally tested. Production deployment, external-worker
+V2 capture, and the final DemoTask V1-versus-V2 comparison remain pending.

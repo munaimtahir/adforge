@@ -77,9 +77,7 @@ class LogoOverlay(BaseModel):
     start_seconds: float = Field(default=0, ge=0)
     end_seconds: float = Field(gt=0)
     width: int = Field(default=180, ge=16, le=800)
-    position: Literal["TOP_LEFT", "TOP_RIGHT", "BOTTOM_LEFT", "BOTTOM_RIGHT"] = (
-        "TOP_RIGHT"
-    )
+    position: Literal["TOP_LEFT", "TOP_RIGHT", "BOTTOM_LEFT", "BOTTOM_RIGHT"] = "TOP_RIGHT"
 
 
 class AudioTrackSpec(BaseModel):
@@ -100,6 +98,11 @@ class OutputProfile(BaseModel):
     fps: int = Field(default=30, ge=24, le=60)
     video_codec: Literal["libx264"] = "libx264"
     audio_codec: Literal["aac"] = "aac"
+    export_kind: Literal["MASTER", "DELIVERY"] = "MASTER"
+    crf: int = Field(default=18, ge=0, le=51)
+    preset: str = Field(default="medium", pattern=r"^[a-z0-9-]+$")
+    audio_bitrate: str = Field(default="192k", pattern=r"^[0-9]+k$")
+    faststart: bool = True
 
     @model_validator(mode="after")
     def supported_profile(self) -> OutputProfile:
@@ -212,13 +215,17 @@ class FFmpegRenderer(Renderer):
                 "-pix_fmt",
                 "yuv420p",
                 "-preset",
-                "veryfast",
-                "-movflags",
-                "+faststart",
+                spec.output_profile.preset,
+                "-crf",
+                str(spec.output_profile.crf),
             ]
         )
+        if spec.output_profile.faststart:
+            command.extend(["-movflags", "+faststart"])
         if audio_label:
-            command.extend(["-c:a", spec.output_profile.audio_codec, "-b:a", "192k"])
+            command.extend(
+                ["-c:a", spec.output_profile.audio_codec, "-b:a", spec.output_profile.audio_bitrate]
+            )
         command.append(str(output))
         result = subprocess.run(  # noqa: S603 - fixed executable/argv; no shell
             command,
@@ -302,9 +309,7 @@ class FFmpegRenderer(Renderer):
                 effects.append(f"fade=t=in:st=0:d={clip.transition_in.duration_seconds}")
             if clip.transition_out.type == "FADE" and clip.transition_out.duration_seconds:
                 start = max(0, clip.duration_seconds - clip.transition_out.duration_seconds)
-                effects.append(
-                    f"fade=t=out:st={start}:d={clip.transition_out.duration_seconds}"
-                )
+                effects.append(f"fade=t=out:st={start}:d={clip.transition_out.duration_seconds}")
             suffix = "," + ",".join(effects) if effects else ""
             filters.append(
                 f"[{index}:v]trim=start={clip.source_in_seconds}:end={clip.source_out_seconds},"
@@ -321,9 +326,7 @@ class FFmpegRenderer(Renderer):
             text_path = build_root / f"text-{index}.txt"
             text_path.write_text(overlay.text)
             next_label = f"vtext{index}"
-            y = {"TOP": "h*0.12", "CENTER": "(h-text_h)/2", "BOTTOM": "h*0.82"}[
-                overlay.position
-            ]
+            y = {"TOP": "h*0.12", "CENTER": "(h-text_h)/2", "BOTTOM": "h*0.82"}[overlay.position]
             box = ":box=1:boxcolor=black@0.65:boxborderw=18" if overlay.background else ""
             filters.append(
                 f"[{video_label}]drawtext=fontfile='{self._escape(self.font_path)}':"
