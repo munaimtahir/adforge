@@ -665,6 +665,22 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
         dsl_result: dict[str, Any] = {}
         dsl_error: str | None = None
         for _capture_attempt in range(1, 4):
+            if dsl_actions and _capture_attempt > 1:
+                # A directed DSL script is a stateful sequence (dismiss
+                # onboarding, add a product, save it, ...), not idempotent
+                # random taps. Found live: replaying it from action 0 against
+                # whatever state the PREVIOUS failed attempt left the app in
+                # produces a confusing, unrelated-looking failure (e.g. "Get
+                # started" not found because the prior attempt already
+                # dismissed onboarding and moved on). Reset to a clean,
+                # freshly-launched app before every replay so the script's
+                # assumptions about starting state hold every time.
+                _adb(sdk["adb"], serial, "shell", "pm", "clear", package_id, timeout=30)
+                _adb(
+                    sdk["adb"], serial, "shell", "monkey", "-p", package_id,
+                    "-c", "android.intent.category.LAUNCHER", "1", timeout=30,
+                )
+                time.sleep(5)
             _adb(sdk["adb"], serial, "shell", "rm", "-f", remote_video, timeout=15)
             started_at = time.monotonic()
             # `screenrecord` must be backgrounded with `nohup` -- a synchronous
