@@ -1098,10 +1098,22 @@ def cmd_start(args: argparse.Namespace) -> int:
     last_heartbeat = 0.0
     while True:
         now = time.monotonic()
-        if now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS or last_heartbeat == 0.0:
-            client.heartbeat(config["name"])
-            last_heartbeat = now
-        job = client.claim()
+        try:
+            if now - last_heartbeat >= HEARTBEAT_INTERVAL_SECONDS or last_heartbeat == 0.0:
+                client.heartbeat(config["name"])
+                last_heartbeat = now
+            job = client.claim()
+        except httpx.HTTPError as exc:
+            # A transient network blip (read/connect timeout, DNS hiccup) here used
+            # to crash the whole poll loop and silently stop the worker -- found
+            # live: this left dispatched WorkerJobs sitting PENDING indefinitely
+            # with nothing to notice or restart the process. Log and keep polling
+            # instead; the next iteration retries on its own.
+            print(f"poll cycle transport error: {exc}", file=sys.stderr)
+            if args.once:
+                return 0
+            time.sleep(POLL_INTERVAL_SECONDS)
+            continue
         if job is not None:
             try:
                 run_job(client, job, workdir)
