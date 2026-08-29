@@ -250,6 +250,15 @@ ANDROID_DSL_INSTRUCTION = (
     "`duration_ms` and no coordinates or text."
 )
 
+STORYBOARD_STRUCTURE_INSTRUCTION = (
+    "Every shot needs its own unique `shot_id` AND its own unique `scene_id` -- "
+    "unlike traditional film grammar, this schema does not allow two shots to "
+    "share one scene_id, even if they are part of the same narrative beat. If "
+    "you want two shots that feel like one continuous moment, give them "
+    "adjacent, contiguous start/duration values and two distinct scene_ids "
+    "(e.g. `scene-hook-1` and `scene-hook-2`), not the same scene_id twice."
+)
+
 
 def build_strategy_handler(services: Services, router: ProviderRouter) -> StageHandler:
     """The real STRATEGY stage: produces and persists Creative Quality 2.0's
@@ -320,6 +329,7 @@ def build_storyboard_handler(services: Services, router: ProviderRouter) -> Stag
             additional_context={
                 "claim_discipline": CLAIM_DISCIPLINE_INSTRUCTION,
                 "android_dsl": ANDROID_DSL_INSTRUCTION,
+                "storyboard_structure": STORYBOARD_STRUCTURE_INSTRUCTION,
                 "strategy": strategy.model_dump(mode="json"),
                 "script": script.model_dump(mode="json"),
             },
