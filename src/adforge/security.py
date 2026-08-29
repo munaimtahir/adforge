@@ -8,7 +8,11 @@ from typing import Any
 REDACTED = "[REDACTED]"
 SECRET_KEY = re.compile(r"(?i)(secret|password|token|api[_-]?key|cookie|authorization)")
 SECRET_VALUE = re.compile(
-    r"(?i)(bearer\s+[a-z0-9._~+/=-]+|(?:sk|key|token)[-_][a-z0-9_-]{8,})"
+    # `\b` before the sk/key/token prefix matters: without it this matched inside
+    # ordinary words -- found live, "task-management" contains "sk-management" as
+    # a substring and was silently redacted, blocking any campaign brief for
+    # DemoTask (a task-management app) from ever reaching a provider.
+    r"(?i)(bearer\s+[a-z0-9._~+/=-]+|\b(?:sk|key|token)[-_][a-z0-9_-]{8,})"
 )
 
 
