@@ -32,6 +32,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -329,11 +330,45 @@ def _recording_has_real_duration(path: Path, expected_seconds: int) -> bool:
 
 
 def start_emulator(sdk: dict[str, Any], avd_name: str) -> subprocess.Popen[bytes]:
+    # `start_new_session=True` puts the emulator (and whatever qemu child it
+    # forks into) in its own process group, so `stop_emulator` below can kill
+    # the whole group instead of just the launcher PID -- the launcher often
+    # exits before the real qemu process does, which otherwise leaves qemu
+    # running and orphaned after we think we've stopped it.
     return subprocess.Popen(  # noqa: S603 - resolved executable, fixed argv
         [sdk["emulator"], "-avd", avd_name, "-no-audio", "-no-boot-anim"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
+
+
+def stop_emulator(process: subprocess.Popen[bytes], *, timeout: float = 20.0) -> None:
+    """Terminate an emulator started by `start_emulator` and block until it's
+    actually gone. A bare `process.terminate()` without waiting is what caused
+    retries to pile up competing emulator instances in production: the launcher
+    process can take several seconds (or leave an orphaned qemu child) to exit,
+    and the next retry's `start_emulator` call would race ahead of that.
+    """
+    try:
+        pgid = os.getpgid(process.pid)
+    except ProcessLookupError:
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def wait_for_boot(adb_path: str, serial: str, *, timeout_seconds: int = 180) -> bool:
@@ -478,6 +513,27 @@ def execute_capture_actions(
     }
 
 
+def _kill_stray_emulators(avd_name: str) -> None:
+    """Best-effort cleanup of leftover `emulator`/`qemu-system-*` processes for
+    our AVD from a previous, non-graceful worker exit. Matches on the AVD name
+    in the command line so this only ever touches AdForge's own emulator, not
+    unrelated processes.
+    """
+    pkill_path = shutil.which("pkill")
+    if not pkill_path:
+        return
+    try:
+        subprocess.run(  # noqa: S603 - resolved executable, fixed argv
+            [pkill_path, "-9", "-f", f"(emulator|qemu-system).*-avd[ =]{re.escape(avd_name)}"],
+            check=False,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    time.sleep(1)
+
+
 def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path) -> None:
     job_id = job["id"]
     payload = job.get("payload", {})
@@ -518,6 +574,13 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
         client.fail(job_id, "NON_RETRYABLE", "downloaded APK checksum does not match job payload")
         return
 
+    # Belt-and-suspenders: a prior run of this worker (crashed, killed, or one
+    # whose `finally` block didn't get to run) can leave a stray emulator for
+    # the canonical AVD behind. Clear it before launching a fresh one so
+    # retries never end up with multiple emulators competing for CPU/RAM --
+    # that starvation is what caused every attempt of job dcfd906c to fail to
+    # boot in time.
+    _kill_stray_emulators(CANONICAL_AVD_NAME)
     process = start_emulator(sdk, CANONICAL_AVD_NAME)
     try:
         serial = "emulator-5554"
@@ -649,7 +712,7 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
             client.upload_artifact(job_id, artifact_path)
         client.complete(job_id)
     finally:
-        process.terminate()
+        stop_emulator(process)
 
 
 # --------------------------------------------------------------------------
