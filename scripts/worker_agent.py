@@ -591,12 +591,17 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
             client.fail(job_id, "RETRYABLE", "emulator did not report boot completion in time")
             return
         install = _adb(sdk["adb"], serial, "install", "-r", str(apk_path), timeout=180)
-        stale_signature = "INSTALL_FAILED_UPDATE_INCOMPATIBLE" in (install.stderr or "")
-        if install.returncode != 0 and stale_signature:
-            # A build of this package_id signed with a different key is already on
-            # the device (e.g. left over from an earlier session) -- `-r` cannot
-            # replace across a signature change, that's an Android OS security
-            # restriction no install flag can override. Remove it and retry once.
+        stale_install = any(
+            marker in (install.stderr or "")
+            for marker in ("INSTALL_FAILED_UPDATE_INCOMPATIBLE", "INSTALL_FAILED_VERSION_DOWNGRADE")
+        )
+        if install.returncode != 0 and stale_install:
+            # A build of this package_id signed with a different key, or with a
+            # higher version code, is already on the device (e.g. left over from
+            # an earlier session on this persistent AVD) -- `-r` cannot replace
+            # across a signature change or downgrade, that's an Android OS
+            # security/versioning restriction no install flag can override.
+            # Remove it and retry once.
             _adb(sdk["adb"], serial, "uninstall", package_id, timeout=60)
             install = _adb(sdk["adb"], serial, "install", "-r", str(apk_path), timeout=180)
         if install.returncode != 0:
