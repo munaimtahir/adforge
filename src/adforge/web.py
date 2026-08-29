@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
@@ -36,6 +37,7 @@ from adforge.models import (
     Product,
     TaskState,
     TruthReadiness,
+    WorkerJob,
     WorkerJobStatus,
     WorkerNode,
 )
@@ -44,7 +46,7 @@ from adforge.product_truth import ProductTruthError, ProductTruthService
 from adforge.providers import ClaudeCodeProvider, CodexCLIProvider, ProviderRouter
 from adforge.renderer import FFmpegRenderer
 from adforge.services import Services
-from adforge.storage import UnsafePathError
+from adforge.storage import UnsafePathError, safe_component
 from adforge.worker import CampaignWorker
 from adforge.worker_api import WorkerJobService, build_worker_router
 from adforge.worker_auth import issue_token
@@ -226,16 +228,16 @@ def create_app(
     def products(request: Request, _: Session) -> HTMLResponse:
         return render(request, "products.html", products=context.services.products.list())
 
+    @app.get("/products/new", response_class=HTMLResponse)
+    def new_product(request: Request, _: Session) -> HTMLResponse:
+        return render(request, "new_product.html", error=None)
+
     @app.get("/products/{product_id}", response_class=HTMLResponse)
     def product_detail(request: Request, product_id: str, _: Session) -> HTMLResponse:
         product = context.services.products.get(product_id)
         if product is None:
             raise HTTPException(status_code=404)
         return render(request, "product_detail.html", product=product)
-
-    @app.get("/products/new", response_class=HTMLResponse)
-    def new_product(request: Request, _: Session) -> HTMLResponse:
-        return render(request, "new_product.html", error=None)
 
     @app.post("/products", response_class=HTMLResponse)
     def create_product(
@@ -367,10 +369,11 @@ def create_app(
             content = upload.file.read()
             if not content:
                 raise HTTPException(status_code=422, detail=f"{upload.filename} is empty")
+            filename = resolve_manual_artifact_filename(job, upload.filename, len(files))
             context.worker_jobs.store_artifact(
                 worker,
                 job_id,
-                filename=upload.filename or "upload",
+                filename=filename,
                 content=content,
                 content_type=upload.content_type or "application/octet-stream",
                 declared_checksum=hashlib.sha256(content).hexdigest(),
@@ -649,3 +652,32 @@ def manual_admin_worker(services: Services) -> WorkerNode:
             capabilities=[],
         )
     )
+
+
+def resolve_manual_artifact_filename(
+    job: WorkerJob, original: str | None, upload_count: int
+) -> str:
+    """Turn a browser-supplied upload filename into one `store_artifact`'s
+    `safe_component()` will accept.
+
+    Found live: a real Flow-downloaded video's filename (spaces, parentheses --
+    ordinary browser download naming) doesn't satisfy `safe_component`'s strict
+    pattern, and `store_artifact` raised that `UnsafePathError` straight into an
+    uncaught 500. When the job expects exactly one output file and exactly one
+    file was uploaded (the common case: `flow_generation`), use the job's own
+    already-safe expected filename directly instead of trusting the browser's
+    name at all -- it's what the artifact importer looks for regardless. For
+    anything else, sanitize; fall back to a generated name if nothing usable
+    survives.
+    """
+    expected = job.payload.get("output_filename")
+    if upload_count == 1 and isinstance(expected, str) and expected:
+        return expected
+    candidate = Path(original or "").name
+    try:
+        return safe_component(candidate)
+    except UnsafePathError:
+        pass
+    suffix = Path(candidate).suffix.lower().lstrip(".")
+    safe_suffix = suffix if re.fullmatch(r"[a-z0-9]{1,10}", suffix) else "bin"
+    return f"upload-{uuid4().hex}.{safe_suffix}"

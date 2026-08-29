@@ -75,7 +75,19 @@ class Orchestrator:
         if target not in EXCEPTIONAL_STATES | {CampaignState.COMPLETE} and not campaign.active:
             self.acquire_lease(campaign_id)
             campaign = self._campaign(campaign_id)
-        resume_state = campaign.state if target in EXCEPTIONAL_STATES else None
+        if target not in EXCEPTIONAL_STATES:
+            resume_state = None
+        elif campaign.state in EXCEPTIONAL_STATES:
+            # Chaining between exceptional states (e.g. a WorkerJob exhausting its
+            # attempts moves WAITING_FOR_WORKER -> BLOCKED) must not overwrite the
+            # real resume point with the exceptional state we're leaving -- found
+            # live: that overwrite permanently lost resume_state=ASSET_GENERATION,
+            # replacing it with resume_state=WAITING_FOR_WORKER, so resuming just
+            # bounced straight back into WAITING_FOR_WORKER with nothing to wait
+            # for and no way to ever continue the campaign again.
+            resume_state = campaign.resume_state
+        else:
+            resume_state = campaign.state
         updated = campaign.model_copy(
             update={
                 "state": target,

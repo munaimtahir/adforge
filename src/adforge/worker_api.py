@@ -395,8 +395,24 @@ class WorkerJobService:
         return job
 
     def _resume_campaign_if_waiting(self, job: WorkerJob) -> None:
+        """Import the completed job's artifact and continue the campaign.
+
+        Also fires when the campaign is `BLOCKED`, not just `WAITING_FOR_WORKER`:
+        a campaign whose WorkerJob already exhausted its automated attempt budget
+        was moved to `BLOCKED` by `fail()` before a human ever gets a chance to
+        complete it manually (via the web UI's manual-completion route) -- found
+        live, completing such a job used to silently skip this entirely (no
+        artifact import, campaign never moved, no error) because this only ever
+        checked for `WAITING_FOR_WORKER`. Safe to combine with `Orchestrator`'s
+        BLOCKED-still-preserves-resume_state fix: `resume()` below then resumes
+        straight to the real underlying stage regardless of which of the two
+        exceptional states the campaign was actually in.
+        """
         campaign = self.services.campaigns.get(job.campaign_id)
-        if campaign is None or campaign.state != CampaignState.WAITING_FOR_WORKER:
+        if campaign is None or campaign.state not in (
+            CampaignState.WAITING_FOR_WORKER,
+            CampaignState.BLOCKED,
+        ):
             return
         importer = self.artifact_importers.get(job.capability)
         if importer is not None:

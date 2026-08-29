@@ -52,6 +52,37 @@ def test_pause_resume_and_one_active_campaign_lease(services: Services) -> None:
     assert resumed.active is True
 
 
+def test_chained_exceptional_transitions_preserve_the_original_resume_point(
+    services: Services,
+) -> None:
+    """The real bug found live: a WorkerJob exhausting its automated attempt
+    budget moves the campaign WAITING_FOR_WORKER -> BLOCKED. Before this fix,
+    transition() always captured the state being *left* as resume_state, so
+    that second hop overwrote resume_state=ASSET_GENERATION (the real point to
+    continue from) with resume_state=WAITING_FOR_WORKER (the exceptional state
+    itself) -- permanently losing it, since resuming from BLOCKED would then
+    just land back in WAITING_FOR_WORKER with nothing to wait for and no way to
+    ever continue the campaign again.
+    """
+    created = campaign(services)
+    orchestrator = Orchestrator(services)
+    orchestrator.transition(created.id, CampaignState.PRODUCT_TRUTH_VALIDATION)
+    orchestrator.transition(created.id, CampaignState.STRATEGY)
+    orchestrator.transition(created.id, CampaignState.SCRIPT)
+    orchestrator.transition(created.id, CampaignState.STORYBOARD)
+    orchestrator.transition(created.id, CampaignState.ASSET_PLAN)
+    orchestrator.transition(created.id, CampaignState.ASSET_GENERATION)
+    waiting = orchestrator.transition(created.id, CampaignState.WAITING_FOR_WORKER)
+    assert waiting.resume_state == CampaignState.ASSET_GENERATION
+
+    blocked = orchestrator.transition(created.id, CampaignState.BLOCKED)
+    assert blocked.resume_state == CampaignState.ASSET_GENERATION
+
+    resumed = orchestrator.resume(created.id)
+    assert resumed.state == CampaignState.ASSET_GENERATION
+    assert resumed.active is True
+
+
 def test_task_retries_initial_plus_two_and_preserves_assets(services: Services) -> None:
     created = campaign(services)
     existing_asset = services.assets.save(

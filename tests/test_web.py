@@ -72,6 +72,7 @@ def test_required_routes_render_without_secret_leakage(client: TestClient) -> No
     routes = (
         "/",
         "/products",
+        "/products/new",
         "/products/product-1",
         "/campaigns/new",
         "/campaigns",
@@ -169,6 +170,19 @@ def test_campaign_creation_accepts_a_real_apk_file_upload(client: TestClient) ->
     ingested = workspace / "app-capture" / "source.apk"
     assert ingested.is_file()
     assert ingested.read_bytes() == b"real-apk-bytes"
+
+
+def test_get_products_new_renders_the_form_not_a_404(client: TestClient) -> None:
+    """The real bug found live: `/products/{product_id}` was registered before
+    `/products/new`, so FastAPI/Starlette (route matching is registration-order,
+    not specificity-order) matched "new" as a product_id first -- product_detail
+    then 404'd since no such product exists. `/products/new` never rendered.
+    """
+    csrf = login(client)
+    response = client.get("/products/new")
+    assert response.status_code == 200
+    assert "product_truth_json" in response.text
+    assert csrf in response.text
 
 
 def test_new_product_form_creates_a_ready_product_from_pasted_truth(
@@ -274,6 +288,54 @@ def test_manual_worker_job_completion_uploads_artifact_and_resumes(
     assert assets[0].asset_type == "generated_video"
 
 
+def test_manual_worker_job_completion_accepts_real_browser_download_filenames(
+    client: TestClient,
+) -> None:
+    """The exact real bug found live: a real Flow-downloaded file's browser
+    filename (spaces, parentheses -- ordinary download naming, e.g. what Chrome
+    names a second download of the same title) doesn't satisfy
+    safe_component()'s strict pattern, and store_artifact previously raised that
+    UnsafePathError straight into an uncaught 500.
+    """
+    csrf = login(client)
+    context: WebContext = client.app.state.context
+    campaign = context.services.campaigns.save(
+        Campaign(product_id="product-1", name="Real filename", brief="brief")
+    )
+    job = context.services.worker_jobs.save(
+        WorkerJob(
+            campaign_id=campaign.id,
+            capability="flow_generation",
+            payload={
+                "prompt": "A fictional demo clip",
+                "output_filename": "scene.mp4",
+                "scene_id": "scene-1",
+            },
+            idempotency_key="manual-real-filename-key",
+        )
+    )
+
+    response = client.post(
+        f"/worker-jobs/{job.id}/manual-complete",
+        data={"csrf": csrf},
+        files=[
+            (
+                "files",
+                ("DemoTask intro (Google Flow) (1).mp4", b"real-download-bytes", "video/mp4"),
+            )
+        ],
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    updated_job = context.services.worker_jobs.get(job.id)
+    assert updated_job is not None
+    assert updated_job.status == WorkerJobStatus.COMPLETE
+    artifacts = context.services.worker_artifacts.find_by("job_id", job.id)
+    assert len(artifacts) == 1
+    assert artifacts[0].filename == "scene.mp4"
+
+
 def test_manual_worker_job_completion_works_after_automated_attempts_exhausted(
     client: TestClient,
 ) -> None:
@@ -325,6 +387,66 @@ def test_manual_worker_job_completion_works_after_automated_attempts_exhausted(
     assert updated_job.attempt == 3
     assets = context.services.assets.find_by("campaign_id", campaign.id)
     assert len(assets) == 1
+
+
+def test_manual_worker_job_completion_works_when_campaign_already_blocked(
+    client: TestClient,
+) -> None:
+    """The exact real bug found live, one step worse than the FAILED-job case
+    above: by the time a flow_generation job exhausts its automated attempt
+    budget, WorkerJobService.fail() has already moved the *campaign* itself
+    WAITING_FOR_WORKER -> BLOCKED (capturing resume_state=WAITING_FOR_WORKER) --
+    that's the real state a stuck campaign is actually found in, not
+    WAITING_FOR_WORKER directly. complete()'s own artifact-import-and-continue
+    logic only fires when the campaign is WAITING_FOR_WORKER at that exact
+    moment, so completing the job while BLOCKED silently skipped artifact
+    import entirely: both real DemoTask WorkerJobs showed COMPLETE with real
+    uploaded artifacts, yet zero Asset records existed and the campaign never
+    moved -- no error, just silently stuck.
+    """
+    csrf = login(client)
+    context: WebContext = client.app.state.context
+    campaign = context.services.campaigns.save(
+        Campaign(
+            product_id="product-1",
+            name="Manual while blocked",
+            brief="brief",
+            state=CampaignState.BLOCKED,
+            resume_state=CampaignState.WAITING_FOR_WORKER,
+            active=False,
+        )
+    )
+    job = context.services.worker_jobs.save(
+        WorkerJob(
+            campaign_id=campaign.id,
+            capability="flow_generation",
+            status=WorkerJobStatus.FAILED,
+            attempt=3,
+            max_attempts=3,
+            failure_summary="Locator.fill: Timeout 30000ms exceeded.",
+            payload={
+                "prompt": "A fictional demo clip",
+                "output_filename": "scene.mp4",
+                "scene_id": "scene-1",
+            },
+            idempotency_key="manual-blocked-key",
+        )
+    )
+
+    response = client.post(
+        f"/worker-jobs/{job.id}/manual-complete",
+        data={"csrf": csrf},
+        files=[("files", ("scene.mp4", b"not-empty-video-bytes", "video/mp4"))],
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    updated_job = context.services.worker_jobs.get(job.id)
+    assert updated_job is not None
+    assert updated_job.status == WorkerJobStatus.COMPLETE
+    assets = context.services.assets.find_by("campaign_id", campaign.id)
+    assert len(assets) == 1
+    assert assets[0].source == "worker:flow_generation"
 
 
 def test_manual_worker_job_completion_rejects_empty_upload(client: TestClient) -> None:
