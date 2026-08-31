@@ -148,9 +148,22 @@ def app_capture_payload(services: Services, campaign: Campaign) -> dict[str, Any
             actions: list[dict[str, Any]] = []
             expected_filenames: list[str] = []
             keyboard_policy = KeyboardPolicy.ALLOWED
+            # Every shot's actions land at a known index in the one combined
+            # action list, so the worker can time-stamp (in the single shared
+            # recording) exactly where each shot's own footage starts --
+            # without this, EDIT_PLAN has no way to know where in the
+            # recording any shot but the first actually begins, and every
+            # capture-derived shot silently re-used the same opening seconds
+            # of the recording (found live: every app-demo shot in a real
+            # render showed the onboarding screen because none of them had a
+            # real start offset).
+            shot_boundaries: list[dict[str, Any]] = []
             for shot in capture_shots:
                 instruction = shot.capture_instruction
                 assert instruction is not None
+                shot_boundaries.append(
+                    {"shot_id": shot.shot_id, "action_start_index": len(actions)}
+                )
                 actions.extend(action.model_dump(mode="json") for action in instruction.actions)
                 expected_filenames.extend(instruction.expected_filenames)
                 if instruction.keyboard_policy == KeyboardPolicy.FORBIDDEN:
@@ -163,6 +176,7 @@ def app_capture_payload(services: Services, campaign: Campaign) -> dict[str, Any
             payload["actions"] = actions
             payload["keyboard_policy"] = keyboard_policy.value
             payload["expected_filenames"] = expected_filenames
+            payload["shot_boundaries"] = shot_boundaries
     return payload
 
 
@@ -228,6 +242,38 @@ def _capture_keyboard_visible(services: Services, campaign_id: str, job: WorkerJ
     return value if isinstance(value, bool) else None
 
 
+def _capture_shot_boundaries(
+    services: Services, campaign_id: str, job: WorkerJob
+) -> dict[str, dict[str, float | None]]:
+    """Recover each shot's real start/end offset within the single combined
+    recording.mp4, as timestamped live by the worker while it executed that
+    shot's actions -- keyed by shot_id, `{"start": seconds, "end": seconds|None}`
+    (`end` is None for the last shot: cut to the shot's own required duration
+    from `start` instead)."""
+    artifacts = {a.filename: a for a in services.worker_artifacts.find_by("job_id", job.id)}
+    capture_artifact = artifacts.get("capture.json")
+    if capture_artifact is None:
+        return {}
+    workspace = services.storage.campaign_workspace(campaign_id)
+    try:
+        payload = json.loads((workspace / capture_artifact.filepath).read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    boundaries = payload.get("shot_boundaries")
+    if not isinstance(boundaries, list):
+        return {}
+    result: dict[str, dict[str, float | None]] = {}
+    for entry in boundaries:
+        shot_id = entry.get("shot_id")
+        start = entry.get("start_seconds")
+        if not isinstance(shot_id, str) or not isinstance(start, (int, float)):
+            continue
+        end = entry.get("end_seconds")
+        end_value = float(end) if isinstance(end, (int, float)) else None
+        result[shot_id] = {"start": float(start), "end": end_value}
+    return result
+
+
 def _import_app_capture_artifacts(services: Services, campaign: Campaign, job: WorkerJob) -> None:
     artifacts = {a.filename: a for a in services.worker_artifacts.find_by("job_id", job.id)}
     required = ("screenshot.png", "recording.mp4", "device.json", "capture.json", "checksums.json")
@@ -237,6 +283,7 @@ def _import_app_capture_artifacts(services: Services, campaign: Campaign, job: W
             f"android_capture WorkerJob {job.id} is missing required artifacts: {missing}"
         )
     keyboard_visible = _capture_keyboard_visible(services, campaign.id, job)
+    shot_boundaries = _capture_shot_boundaries(services, campaign.id, job)
     for filename, asset_type in (
         ("screenshot.png", "app_capture_image"),
         ("recording.mp4", "app_capture_video"),
@@ -251,6 +298,8 @@ def _import_app_capture_artifacts(services: Services, campaign: Campaign, job: W
         }
         if asset_type == "app_capture_video" and keyboard_visible is not None:
             provenance["keyboard_visible"] = keyboard_visible
+        if asset_type == "app_capture_video" and shot_boundaries:
+            provenance["shot_boundaries"] = shot_boundaries
         asset = services.assets.save(
             Asset(
                 campaign_id=campaign.id,

@@ -270,6 +270,13 @@ def test_app_capture_chains_every_capture_shots_actions_in_one_session(
     # Any shot requiring FORBIDDEN wins over an earlier shot's ALLOWED --
     # the session-wide keyboard-exposure check must stay strict.
     assert job.payload["keyboard_policy"] == "FORBIDDEN"
+    # EDIT_PLAN needs to know where each shot's actions start in the one
+    # combined recording -- shot-01's 2 actions occupy indices 0-1, so
+    # shot-02 (ASSERT_VISIBLE) starts at index 2.
+    assert job.payload["shot_boundaries"] == [
+        {"shot_id": "shot-01-add", "action_start_index": 0},
+        {"shot_id": "shot-02-dashboard", "action_start_index": 2},
+    ]
 
 
 def test_flow_stage_creates_flow_generation_worker_job_per_scene(services: Services) -> None:
@@ -350,6 +357,55 @@ def test_completion_imports_artifacts_and_auto_resumes_campaign(services: Servic
     assert asset_types == {"app_capture_image", "app_capture_video"}
     manifest = services.storage.read_manifest(campaign.id)
     assert len(manifest["assets"]) == 2
+
+
+def test_completion_imports_real_shot_boundaries_into_capture_asset_provenance(
+    services: Services,
+) -> None:
+    """Regression: without a real per-shot start offset into the shared
+    recording, `_execute_edit_plan` always cut every capture-derived shot
+    from the start of the recording -- so a real render showed the same
+    opening seconds (the onboarding screen) for every app-demo shot instead
+    of each shot's own moment. The worker time-stamps each shot as it runs
+    and reports it in capture.json; the importer must carry that into the
+    imported asset's provenance, keyed by shot_id.
+    """
+    campaign = campaign_at(services, CampaignState.APP_CAPTURE)
+    seed_apk(services, campaign.id)
+    seed_storyboard_with_capture_shots(services, campaign.id)
+    worker, job_service = build_worker(services)
+    worker.run(campaign.id, max_stages=1)
+    node, _ = register_worker(services, APP_CAPTURE_CAPABILITY)
+    claimed = job_service.claim(node)
+    assert claimed is not None
+
+    capture_json = json.dumps(
+        {
+            "shot_boundaries": [
+                {"shot_id": "shot-01-add", "start_seconds": 0.8, "end_seconds": 4.1},
+                {"shot_id": "shot-02-dashboard", "start_seconds": 4.1, "end_seconds": None},
+            ]
+        }
+    ).encode()
+    for filename, content, content_type in (
+        ("screenshot.png", b"fake-png-bytes", "image/png"),
+        ("recording.mp4", b"fake-mp4-bytes", "video/mp4"),
+        ("device.json", b"{}", "application/json"),
+        ("capture.json", capture_json, "application/json"),
+        ("checksums.json", b"{}", "application/json"),
+    ):
+        job_service.store_artifact(
+            node, claimed.id, filename=filename, content=content,
+            content_type=content_type, declared_checksum=hashlib.sha256(content).hexdigest(),
+        )
+    job_service.complete(node, claimed.id)
+
+    assets = services.assets.find_by("campaign_id", campaign.id)
+    video_asset = next(a for a in assets if a.asset_type == "app_capture_video")
+    assert video_asset.provenance["shot_boundaries"] == {
+        "shot-01-add": {"start": 0.8, "end": 4.1},
+        "shot-02-dashboard": {"start": 4.1, "end": None},
+    }
 
 
 def test_duplicate_completion_does_not_double_import_or_double_advance(

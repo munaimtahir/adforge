@@ -404,6 +404,152 @@ def test_full_pipeline_produces_a_real_playable_final_mp4(
     assert qc_results and qc_results[0].passed
 
 
+TWO_CAPTURE_SHOTS_STORYBOARD_V2: dict[str, Any] = {
+    "target_duration": 6,
+    "shots": [
+        {
+            "shot_id": "shot-early",
+            "scene_id": "capture-early",
+            "order": 0,
+            "start": 0,
+            "duration": 2,
+            "purpose": "add a task",
+            "visual_source": "ANDROID_DIRECT_CAPTURE",
+            "creative_description": "add a fictional task",
+            "capture_instruction": {
+                "capture_id": "capture-early",
+                "package_id": "pk.fictional.demotask",
+                "actions": [{"action": "WAIT", "duration_ms": 300}],
+                "keyboard_policy": "FORBIDDEN",
+                "expected_filenames": ["shot-early.mp4"],
+            },
+        },
+        {
+            "shot_id": "shot-later",
+            "scene_id": "capture-later",
+            "order": 1,
+            "start": 2,
+            "duration": 2,
+            "purpose": "show the dashboard",
+            "visual_source": "ANDROID_DIRECT_CAPTURE",
+            "creative_description": "dashboard now shows the task",
+            "capture_instruction": {
+                "capture_id": "capture-later",
+                "package_id": "pk.fictional.demotask",
+                "actions": [{"action": "WAIT", "duration_ms": 300}],
+                "keyboard_policy": "FORBIDDEN",
+                "expected_filenames": ["shot-later.mp4"],
+            },
+        },
+        {
+            "shot_id": "shot-gen",
+            "scene_id": "gen-1",
+            "order": 2,
+            "start": 4,
+            "duration": 2,
+            "purpose": "benefit",
+            "visual_source": "GENERATED_CINEMATIC",
+            "creative_description": "Lifestyle b-roll",
+        },
+    ],
+}
+
+TWO_CAPTURE_SHOTS_OUTPUTS: dict[str, Any] = {
+    **SCRIPTED_OUTPUTS,
+    "storyboard-v2": TWO_CAPTURE_SHOTS_STORYBOARD_V2,
+    "asset-plan": {
+        "assets": [
+            {
+                "asset_id": "capture-early",
+                "scene_ids": ["capture-early"],
+                "classification": "CAPTURE_APP",
+                "description": "Real app capture: add a task",
+            },
+            {
+                "asset_id": "capture-later",
+                "scene_ids": ["capture-later"],
+                "classification": "CAPTURE_APP",
+                "description": "Real app capture: dashboard",
+            },
+            {
+                "asset_id": "gen-1",
+                "scene_ids": ["gen-1"],
+                "classification": "GENERATE_VIDEO",
+                "description": "Generated lifestyle clip",
+            },
+        ]
+    },
+}
+
+
+def test_edit_plan_gives_each_capture_shot_its_own_real_start_offset(
+    tmp_path: Path, services: Services
+) -> None:
+    """Regression: two ANDROID_DIRECT_CAPTURE shots share one continuous
+    recording (one android_capture WorkerJob per campaign). Without a real
+    per-shot start offset, `_execute_edit_plan` cut every such shot from the
+    start of that recording -- a real render showed the SAME opening seconds
+    (the app's onboarding screen) for every app-demo shot instead of each
+    shot's own moment. The worker reports real per-shot timestamps in
+    capture.json; EDIT_PLAN must use them, not always start=0.
+    """
+    campaign = make_product_and_campaign(services, tmp_path)
+    seed_apk(services, campaign.id)
+    router = ProviderRouter([ScriptedProvider(TWO_CAPTURE_SHOTS_OUTPUTS)])
+    worker_jobs = WorkerJobService(services)
+    renderer = FFmpegRenderer()
+    handlers = all_real_handlers(services, router, worker_jobs, renderer)
+    worker_jobs.artifact_importers = WORKER_ARTIFACT_IMPORTERS
+    campaign_worker = CampaignWorker(services, handlers)
+
+    campaign_worker.run(campaign.id)
+    node = register_worker(services)
+    flow_job = worker_jobs.claim(node)
+    assert flow_job is not None
+    clip_path = tmp_path / "gen-1.mp4"
+    make_clip(clip_path, duration=4)
+    complete_job(worker_jobs, node, flow_job.id, {"gen-1.mp4": clip_path.read_bytes()})
+    campaign_worker.run(campaign.id)
+
+    capture_job = worker_jobs.claim(node)
+    assert capture_job is not None
+    recording_path = tmp_path / "recording.mp4"
+    make_clip(recording_path, duration=6)
+    capture_json = json.dumps(
+        {
+            "shot_boundaries": [
+                {"shot_id": "shot-early", "start_seconds": 1.0, "end_seconds": 3.0},
+                {"shot_id": "shot-later", "start_seconds": 3.0, "end_seconds": None},
+            ]
+        }
+    ).encode()
+    complete_job(
+        worker_jobs,
+        node,
+        capture_job.id,
+        {
+            "screenshot.png": b"fake-png-bytes",
+            "recording.mp4": recording_path.read_bytes(),
+            "device.json": b"{}",
+            "capture.json": capture_json,
+            "checksums.json": b"{}",
+        },
+    )
+
+    result = campaign_worker.run(campaign.id)
+    assert result.state == CampaignState.COMPLETE, services.ledger.read(campaign.id)[-5:]
+
+    edit_plan_path = services.storage.campaign_workspace(campaign.id) / "edit" / "edit_plan.v2.json"
+    edit_plan = json.loads(edit_plan_path.read_text())
+    clips_by_shot = {clip["shot_id"]: clip for clip in edit_plan["clips"]}
+    assert clips_by_shot["shot-early"]["trim_start"] == 1.0
+    assert clips_by_shot["shot-early"]["trim_end"] == 3.0
+    assert clips_by_shot["shot-later"]["trim_start"] == 3.0
+    assert clips_by_shot["shot-later"]["trim_end"] == 5.0
+    # The two capture shots must not silently collapse onto the same offset.
+    assert clips_by_shot["shot-early"]["trim_start"] != clips_by_shot["shot-later"]["trim_start"]
+
+
 def test_qc_failure_schedules_repair_and_repair_fixes_the_render(
     tmp_path: Path, services: Services
 ) -> None:

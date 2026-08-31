@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from adforge.creative_quality import (
+    ActionFailureCode,
     AndroidAction,
     AndroidActionError,
     AndroidActionExecutor,
@@ -16,6 +17,7 @@ from adforge.creative_quality import (
     ScriptBeat2,
     ScriptChannel,
     ScriptPlan2,
+    ScrollDirection,
     Shot,
     Storyboard2,
     VisualSource,
@@ -144,6 +146,168 @@ def test_android_dsl_rejects_injection_and_executor_has_no_shell_escape_hatch(
     with pytest.raises(AndroidActionError) as error:
         executor.execute(AndroidAction(action=AndroidActionType.TAP, x=1081, y=2))
     assert error.value.code.value == "INVALID_COORDINATE"
+
+
+def test_scroll_until_visible_requires_target_text_and_direction() -> None:
+    with pytest.raises(ValidationError, match="requires target_text"):
+        AndroidAction(action=AndroidActionType.SCROLL_UNTIL_VISIBLE, direction=ScrollDirection.DOWN)
+    with pytest.raises(ValidationError, match="requires direction"):
+        AndroidAction(action=AndroidActionType.SCROLL_UNTIL_VISIBLE, target_text="Save Product")
+    action = AndroidAction(
+        action=AndroidActionType.SCROLL_UNTIL_VISIBLE,
+        target_text="Save Product",
+        direction=ScrollDirection.DOWN,
+    )
+    assert action.max_scrolls == 8
+    assert action.scroll_step_fraction == 0.4
+
+
+def test_scroll_until_visible_rejects_invalid_direction_and_limit() -> None:
+    with pytest.raises(ValidationError):
+        AndroidAction(
+            action=AndroidActionType.SCROLL_UNTIL_VISIBLE,
+            target_text="Save Product",
+            direction="SIDEWAYS",  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValidationError):
+        AndroidAction(
+            action=AndroidActionType.SCROLL_UNTIL_VISIBLE,
+            target_text="Save Product",
+            direction=ScrollDirection.DOWN,
+            max_scrolls=0,
+        )
+    with pytest.raises(ValidationError):
+        AndroidAction(
+            action=AndroidActionType.SCROLL_UNTIL_VISIBLE,
+            target_text="Save Product",
+            direction=ScrollDirection.DOWN,
+            max_scrolls=21,
+        )
+
+
+def test_scroll_until_visible_survives_json_round_trip() -> None:
+    action = AndroidAction(
+        action=AndroidActionType.SCROLL_UNTIL_VISIBLE,
+        target_text="Warranty Duration",
+        direction=ScrollDirection.DOWN,
+        max_scrolls=6,
+    )
+    restored = AndroidAction.model_validate_json(action.model_dump_json())
+    assert restored == action
+
+
+class _ScrollFakeAdapter:
+    """Fake adapter that reports a scripted sequence of screens (advancing one
+    per swipe) so the executor's scroll-and-check loop can be exercised
+    without any real device."""
+
+    def __init__(self, screens: list[set[str]]) -> None:
+        self.screens = screens
+        self.index = 0
+        self.swipes: list[tuple[int, int, int, int]] = []
+
+    def tap(self, x: int, y: int) -> None:
+        pass
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 300) -> None:
+        self.swipes.append((x1, y1, x2, y2))
+        if self.index < len(self.screens) - 1:
+            self.index += 1
+
+    def type_text(self, value: str) -> None:
+        pass
+
+    def screenshot(self, destination: Path) -> Path:
+        return destination
+
+    def back(self) -> None:
+        pass
+
+    def home(self) -> None:
+        pass
+
+    def hide_keyboard(self) -> None:
+        pass
+
+    def show_keyboard(self) -> None:
+        pass
+
+    def clear_text(self) -> None:
+        pass
+
+    def tap_text(self, target_text: str) -> None:
+        pass
+
+    def assert_visible(self, target_text: str) -> bool:
+        return target_text in self.screens[self.index]
+
+    def assert_package(self, package_id: str) -> bool:
+        return True
+
+    def visible_text_digest(self) -> str:
+        return ",".join(sorted(self.screens[self.index]))
+
+
+def _scroll_action(target: str, **overrides: object) -> AndroidAction:
+    fields = {
+        "action": AndroidActionType.SCROLL_UNTIL_VISIBLE,
+        "target_text": target,
+        "direction": ScrollDirection.DOWN,
+        "settle_ms": 0,
+        **overrides,
+    }
+    return AndroidAction(**fields)  # type: ignore[arg-type]
+
+
+def test_executor_scroll_until_visible_zero_swipes_when_already_visible() -> None:
+    adapter = _ScrollFakeAdapter([{"Warranty Duration"}])
+    executor = AndroidActionExecutor(adapter)
+    executor.execute(_scroll_action("Warranty Duration"))
+    assert adapter.swipes == []
+
+
+def test_executor_scroll_until_visible_succeeds_after_one_swipe() -> None:
+    adapter = _ScrollFakeAdapter([{"Provider"}, {"Warranty Duration"}])
+    executor = AndroidActionExecutor(adapter)
+    executor.execute(_scroll_action("Warranty Duration"))
+    assert len(adapter.swipes) == 1
+
+
+def test_executor_scroll_until_visible_succeeds_after_multiple_swipes() -> None:
+    adapter = _ScrollFakeAdapter([{"A"}, {"B"}, {"Save Product"}])
+    executor = AndroidActionExecutor(adapter)
+    executor.execute(_scroll_action("Save Product", max_scrolls=8))
+    assert len(adapter.swipes) == 2
+
+
+def test_executor_scroll_until_visible_reports_target_not_found() -> None:
+    adapter = _ScrollFakeAdapter([{"A"}, {"B"}, {"C"}])
+    executor = AndroidActionExecutor(adapter)
+    with pytest.raises(AndroidActionError) as error:
+        executor.execute(_scroll_action("Never Appears", max_scrolls=2))
+    assert error.value.code == ActionFailureCode.SCROLL_TARGET_NOT_FOUND
+
+
+def test_executor_scroll_until_visible_detects_no_progress() -> None:
+    adapter = _ScrollFakeAdapter([{"Static screen"}])
+    executor = AndroidActionExecutor(adapter)
+    with pytest.raises(AndroidActionError) as error:
+        executor.execute(_scroll_action("Warranty Duration", max_scrolls=8))
+    assert error.value.code == ActionFailureCode.SCROLL_NO_PROGRESS
+    assert len(adapter.swipes) == 2
+
+
+def test_executor_scroll_until_visible_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    import adforge.creative_quality as cq
+
+    adapter = _ScrollFakeAdapter([{"A"}])
+    executor = AndroidActionExecutor(adapter)
+    clock = iter([0.0, 1000.0])
+    monkeypatch.setattr(cq.time, "monotonic", lambda: next(clock))
+    with pytest.raises(AndroidActionError) as error:
+        executor.execute(_scroll_action("Warranty Duration"))
+    assert error.value.code == ActionFailureCode.SCROLL_TIMEOUT
+    assert adapter.swipes == []
 
 
 def test_qc_and_repair_mapping_are_conservative() -> None:

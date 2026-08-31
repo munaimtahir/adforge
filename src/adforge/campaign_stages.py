@@ -256,7 +256,19 @@ ANDROID_DSL_INSTRUCTION = (
     "onboarding/permission/consent screen element that might or might not be "
     "present -- unlike TAP_TEXT, it taps the element if found and does nothing "
     "(no error) if it isn't, so the sequence proceeds either way. Never use "
-    "plain TAP_TEXT for a screen that might not appear."
+    "plain TAP_TEXT for a screen that might not appear. When the target control "
+    "is known by name but may be outside the current viewport of a long "
+    "scrollable screen (a form field below the fold, a button at the bottom of "
+    "a list), use SCROLL_UNTIL_VISIBLE with `target_text` and `direction` "
+    "(UP or DOWN) immediately before the TAP_TEXT/ASSERT_VISIBLE that needs it "
+    "-- it scrolls in small bounded increments, checking after each one, and "
+    "stops as soon as the target appears (zero swipes if it is already "
+    "visible). Do not guess a large fixed-distance SWIPE to locate a control; "
+    "a single fixed swipe distance cannot reliably land on two different "
+    "targets on the same long form (it overshoots one to reach the other). "
+    "SWIPE remains the right choice when the swipe itself is the on-screen "
+    "interaction being demonstrated -- a carousel, a pager, or a deliberate "
+    "scrolling gesture -- never as a way to merely reach an off-screen target."
 )
 
 STORYBOARD_STRUCTURE_INSTRUCTION = (
@@ -641,12 +653,24 @@ def _execute_edit_plan(services: Services, renderer: FFmpegRenderer, campaign: C
                 "planned asset in ASSET_PLAN"
             )
         asset: Asset | None
+        source_in_seconds = 0.0
         if need.classification == AssetClassification.CAPTURE_APP:
             asset = capture_asset
             if asset is None:
                 raise StageDispatchError(
                     f"shot {shot.shot_id} needs an app capture, but none was imported"
                 )
+            # All CAPTURE_APP shots share one continuous recording (one
+            # android_capture WorkerJob per campaign) -- without a real
+            # per-shot start offset every such shot silently re-used the same
+            # opening seconds of that recording (found live: a real render
+            # showed the onboarding screen for every app-demo shot instead of
+            # each shot's own moment). The worker time-stamps each shot's
+            # actions as it executes them; fall back to 0 only for an asset
+            # imported before that timestamping existed.
+            boundary = asset.provenance.get("shot_boundaries", {}).get(shot.shot_id)
+            if boundary is not None:
+                source_in_seconds = boundary["start"]
         else:
             asset = video_assets_by_scene_id.get(need.asset_id)
             if asset is None:
@@ -656,17 +680,18 @@ def _execute_edit_plan(services: Services, renderer: FFmpegRenderer, campaign: C
                 )
         source_path = workspace / asset.filepath
         probed = renderer.probe(source_path, expect_audio=False)
-        if probed.duration_seconds + 0.05 < shot.duration:
+        if source_in_seconds + shot.duration > probed.duration_seconds + 0.05:
             raise StageDispatchError(
                 f"source clip for shot {shot.shot_id} is {probed.duration_seconds:.2f}s, "
-                f"shorter than the required {shot.duration:.2f}s"
+                f"shorter than the required {shot.duration:.2f}s starting at "
+                f"{source_in_seconds:.2f}s"
             )
         clips.append(
             ClipSpec(
                 source=asset.filepath,
                 timeline_start_seconds=shot.start,
-                source_in_seconds=0,
-                source_out_seconds=shot.duration,
+                source_in_seconds=source_in_seconds,
+                source_out_seconds=source_in_seconds + shot.duration,
                 composition_mode=shot.composition_intent.mode.value,  # type: ignore[arg-type]
                 device_frame_scale=1 - shot.composition_intent.safe_margin * 2,
                 device_frame_background=shot.composition_intent.background,
@@ -679,8 +704,8 @@ def _execute_edit_plan(services: Services, renderer: FFmpegRenderer, campaign: C
             EditClip2(
                 shot_id=shot.shot_id,
                 source_asset_id=asset.id,
-                trim_start=0,
-                trim_end=shot.duration,
+                trim_start=source_in_seconds,
+                trim_end=source_in_seconds + shot.duration,
                 target_duration=shot.duration,
                 composition=shot.composition_intent,
                 transition=shot.transition_in,

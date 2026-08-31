@@ -74,6 +74,7 @@ class AndroidActionType(StrEnum):
     TYPE_TEXT = "TYPE_TEXT"
     CLEAR_TEXT = "CLEAR_TEXT"
     SWIPE = "SWIPE"
+    SCROLL_UNTIL_VISIBLE = "SCROLL_UNTIL_VISIBLE"
     BACK = "BACK"
     HOME = "HOME"
     HIDE_KEYBOARD = "HIDE_KEYBOARD"
@@ -83,6 +84,11 @@ class AndroidActionType(StrEnum):
     ASSERT_NOT_VISIBLE = "ASSERT_NOT_VISIBLE"
     ASSERT_PACKAGE = "ASSERT_PACKAGE"
     HOLD = "HOLD"
+
+
+class ScrollDirection(StrEnum):
+    UP = "UP"
+    DOWN = "DOWN"
 
 
 class CaptureScenarioKind(StrEnum):
@@ -192,6 +198,12 @@ class AndroidAction(CQModel):
     timeout_seconds: float = Field(default=15, gt=0, le=300)
     retry_count: int = Field(default=0, ge=0, le=3)
     expected_state: str | None = Field(default=None, max_length=200)
+    direction: ScrollDirection | None = None
+    max_scrolls: int = Field(default=8, ge=1, le=20)
+    settle_ms: int = Field(default=400, ge=0, le=5000)
+    scroll_step_fraction: float = Field(default=0.4, gt=0, le=1)
+    exact_match: bool = False
+    case_sensitive: bool = False
 
     @model_validator(mode="after")
     def shape_matches_action(self) -> AndroidAction:
@@ -215,6 +227,11 @@ class AndroidAction(CQModel):
             and not self.target_text
         ):
             raise ValueError("text action requires target_text")
+        if self.action == AndroidActionType.SCROLL_UNTIL_VISIBLE:
+            if not self.target_text:
+                raise ValueError("SCROLL_UNTIL_VISIBLE requires target_text")
+            if self.direction is None:
+                raise ValueError("SCROLL_UNTIL_VISIBLE requires direction")
         if self.action == AndroidActionType.TYPE_TEXT and self.text is None:
             raise ValueError("TYPE_TEXT requires text")
         if (
@@ -613,6 +630,11 @@ class ActionFailureCode(StrEnum):
     ACTION_REJECTED = "ACTION_REJECTED"
     INVALID_COORDINATE = "INVALID_COORDINATE"
     UNSUPPORTED_ACTION = "UNSUPPORTED_ACTION"
+    SCROLL_TARGET_NOT_FOUND = "SCROLL_TARGET_NOT_FOUND"
+    SCROLL_TIMEOUT = "SCROLL_TIMEOUT"
+    SCROLL_NO_PROGRESS = "SCROLL_NO_PROGRESS"
+    INVALID_SCROLL_DIRECTION = "INVALID_SCROLL_DIRECTION"
+    INVALID_SCROLL_LIMIT = "INVALID_SCROLL_LIMIT"
 
 
 class AndroidActionError(RuntimeError):
@@ -634,6 +656,7 @@ class AndroidAdapter(Protocol):
     def tap_text(self, target_text: str) -> None: ...
     def assert_visible(self, target_text: str) -> bool: ...
     def assert_package(self, package_id: str) -> bool: ...
+    def visible_text_digest(self) -> str: ...
 
 
 class AndroidActionExecutor:
@@ -670,6 +693,10 @@ class AndroidActionExecutor:
                 self.adapter.swipe(
                     action.x or 0, action.y or 0, action.x2 or 0, action.y2 or 0, action.duration_ms
                 )
+            elif action.action == AndroidActionType.SCROLL_UNTIL_VISIBLE:
+                assert action.target_text is not None
+                assert action.direction is not None
+                self._scroll_until_visible(action)
             elif action.action == AndroidActionType.TYPE_TEXT:
                 assert action.text is not None
                 self.adapter.type_text(action.text)
@@ -738,3 +765,58 @@ class AndroidActionExecutor:
             raise AndroidActionError(
                 ActionFailureCode.INVALID_COORDINATE, "coordinate is outside capture bounds"
             )
+
+    def _scroll_endpoints(
+        self, direction: AndroidActionType | str, scroll_step_fraction: float
+    ) -> tuple[int, int, int]:
+        """Derive a viewport-relative swipe from the reported device dimensions
+        rather than a hard-coded 1080x1920 magic distance -- DOWN moves content
+        up (revealing lower fields), UP moves content down."""
+        x = self.width // 2
+        span = int(self.height * scroll_step_fraction)
+        mid = self.height // 2
+        half = span // 2
+        if direction == ScrollDirection.DOWN:
+            y1, y2 = min(self.height - 1, mid + half), max(0, mid - half)
+        else:
+            y1, y2 = max(0, mid - half), min(self.height - 1, mid + half)
+        return x, y1, y2
+
+    def _scroll_until_visible(self, action: AndroidAction) -> None:
+        target_text = action.target_text or ""
+        deadline = time.monotonic() + action.timeout_seconds
+        last_digest: str | None = None
+        stall_count = 0
+        scrolls_done = 0
+        while True:
+            if self.adapter.assert_visible(target_text):
+                return
+            if scrolls_done >= action.max_scrolls:
+                raise AndroidActionError(
+                    ActionFailureCode.SCROLL_TARGET_NOT_FOUND,
+                    f"{target_text!r} not visible after {scrolls_done} scroll(s) "
+                    f"{action.direction}",
+                )
+            if time.monotonic() >= deadline:
+                raise AndroidActionError(
+                    ActionFailureCode.SCROLL_TIMEOUT,
+                    f"{target_text!r} not found within {action.timeout_seconds}s",
+                )
+            digest = self.adapter.visible_text_digest()
+            if last_digest is not None and digest == last_digest:
+                stall_count += 1
+                if stall_count >= 2:
+                    raise AndroidActionError(
+                        ActionFailureCode.SCROLL_NO_PROGRESS,
+                        f"viewport unchanged after {scrolls_done} scroll(s) seeking "
+                        f"{target_text!r}",
+                    )
+            else:
+                stall_count = 0
+            last_digest = digest
+            x, y1, y2 = self._scroll_endpoints(
+                action.direction or ScrollDirection.DOWN, action.scroll_step_fraction
+            )
+            self.adapter.swipe(x, y1, x, y2, action.duration_ms)
+            scrolls_done += 1
+            time.sleep(action.settle_ms / 1000)

@@ -38,6 +38,7 @@ import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -382,7 +383,9 @@ def wait_for_boot(adb_path: str, serial: str, *, timeout_seconds: int = 180) -> 
 
 
 class AndroidDSLError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: str = "DSL_ERROR") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def _ui_dump(adb_path: str, serial: str, workdir: Path) -> str:
@@ -460,17 +463,160 @@ def _poll_for_absence(
         time.sleep(0.5)
 
 
+def _visible_text_set(xml_text: str) -> frozenset[str]:
+    """A normalized snapshot of everything on screen right now, used only to
+    detect that scrolling stopped changing the viewport (bottom of the form
+    reached) -- not for locating a specific target."""
+    try:
+        root = ET.fromstring(xml_text)  # noqa: S314 - our own uiautomator dump
+    except ET.ParseError:
+        return frozenset()
+    texts: set[str] = set()
+    for node in root.iter("node"):
+        text = (node.get("text") or "").strip()
+        desc = (node.get("content-desc") or "").strip()
+        if text:
+            texts.add(text)
+        if desc:
+            texts.add(desc)
+    return frozenset(texts)
+
+
+def _screen_size(adb_path: str, serial: str) -> tuple[int, int]:
+    """Real reported device dimensions, so scroll distance is viewport-relative
+    instead of assuming the documented canonical 1080x1920 baseline."""
+    result = _adb(adb_path, serial, "shell", "wm", "size", timeout=15)
+    match = re.search(r"(\d+)x(\d+)\s*$", (result.stdout or "").strip())
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    width, height = (int(part) for part in CANONICAL_RESOLUTION.split("x"))
+    return width, height
+
+
+def _scroll_endpoints(
+    width: int, height: int, direction: str, scroll_step_fraction: float
+) -> tuple[int, int, int]:
+    """One bounded, viewport-relative swipe -- DOWN moves content up (reveals
+    lower fields), UP moves content down. Never a hard-coded pixel distance."""
+    x = width // 2
+    span = int(height * scroll_step_fraction)
+    mid = height // 2
+    half = span // 2
+    if direction == "DOWN":
+        y1, y2 = min(height - 1, mid + half), max(0, mid - half)
+    else:
+        y1, y2 = max(0, mid - half), min(height - 1, mid + half)
+    return x, y1, y2
+
+
+def _scroll_until_visible(
+    adb_path: str,
+    serial: str,
+    target_text: str,
+    direction: str,
+    max_scrolls: int,
+    timeout_seconds: float,
+    settle_ms: int,
+    scroll_step_fraction: float,
+    job_dir: Path,
+) -> None:
+    """Bounded, incremental scroll-and-check: look for `target_text` after each
+    small swipe instead of guessing one large fixed-distance SWIPE that cannot
+    reliably land on two different targets on the same long form."""
+    if direction not in ("UP", "DOWN"):
+        raise AndroidDSLError(
+            f"SCROLL_UNTIL_VISIBLE received invalid direction {direction!r}",
+            code="INVALID_SCROLL_DIRECTION",
+        )
+    if max_scrolls < 1 or max_scrolls > 20:
+        raise AndroidDSLError(
+            f"SCROLL_UNTIL_VISIBLE received invalid max_scrolls {max_scrolls!r}",
+            code="INVALID_SCROLL_LIMIT",
+        )
+    width, height = _screen_size(adb_path, serial)
+    deadline = time.monotonic() + timeout_seconds
+    last_texts: frozenset[str] | None = None
+    stall_count = 0
+    scrolls_done = 0
+    while True:
+        dump = _ui_dump(adb_path, serial, job_dir)
+        if _ui_bounds_for_text(dump, target_text) is not None:
+            return
+        if scrolls_done >= max_scrolls:
+            raise AndroidDSLError(
+                f"SCROLL_TARGET_NOT_FOUND: {target_text!r} not visible after "
+                f"{scrolls_done} scroll(s) {direction}",
+                code="SCROLL_TARGET_NOT_FOUND",
+            )
+        if time.monotonic() >= deadline:
+            raise AndroidDSLError(
+                f"SCROLL_TIMEOUT: {target_text!r} not found within {timeout_seconds}s",
+                code="SCROLL_TIMEOUT",
+            )
+        texts = _visible_text_set(dump)
+        if last_texts is not None and texts == last_texts:
+            stall_count += 1
+            if stall_count >= 2:
+                raise AndroidDSLError(
+                    "SCROLL_NO_PROGRESS: viewport unchanged after "
+                    f"{scrolls_done} scroll(s) seeking {target_text!r}; last visible "
+                    f"text: {sorted(texts)[:10]!r}",
+                    code="SCROLL_NO_PROGRESS",
+                )
+        else:
+            stall_count = 0
+        last_texts = texts
+        x, y1, y2 = _scroll_endpoints(width, height, direction, scroll_step_fraction)
+        _adb(
+            adb_path, serial, "shell", "input", "swipe",
+            str(x), str(y1), str(x), str(y2), "300", timeout=15,
+        )
+        scrolls_done += 1
+        time.sleep(settle_ms / 1000)
+
+
 def execute_capture_actions(
-    adb_path: str, serial: str, actions: list[dict[str, Any]], job_dir: Path
+    adb_path: str,
+    serial: str,
+    actions: list[dict[str, Any]],
+    job_dir: Path,
+    *,
+    shot_boundaries: list[dict[str, Any]] | None = None,
+    recording_started_at: float | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Real, directed execution of the CQ2 Android DSL (`AndroidActionType` in
     `adforge.creative_quality`) against a live device/emulator -- deliberate
     taps, typed text, waits, and asserted UI state, driven by the storyboard's
     `CaptureInstruction`. This replaces blind `monkey --pct-touch` event
     injection, which cannot produce directed, on-brief cinematography.
+
+    When multiple storyboard shots are chained into one session (one
+    android_capture WorkerJob produces one continuous recording), `EDIT_PLAN`
+    needs a real start offset into that recording for each shot -- otherwise
+    every shot but the first silently reuses the same opening seconds (found
+    live: every app-demo shot in a real render showed the onboarding screen).
+    `shot_boundaries` (from the job payload) names which action index starts
+    each shot; timestamping that index against `recording_started_at` as it's
+    reached gives each shot's real, not guessed, position in the recording.
     """
     screenshots: list[str] = []
+    boundary_by_index = {
+        entry["action_start_index"]: entry["shot_id"] for entry in (shot_boundaries or [])
+    }
+    shot_starts: dict[str, float] = {}
     for index, raw_action in enumerate(actions):
+        if on_progress is not None:
+            label = (
+                raw_action.get("target_text") or raw_action.get("text") or ""
+            )
+            on_progress(
+                f"action {index + 1}/{len(actions)}: {raw_action.get('action')} {label}".strip()
+            )
+        if index in boundary_by_index and recording_started_at is not None:
+            shot_starts[boundary_by_index[index]] = max(
+                0.0, time.monotonic() - recording_started_at
+            )
         action = raw_action.get("action")
         x, y = raw_action.get("x"), raw_action.get("y")
         x2, y2 = raw_action.get("x2"), raw_action.get("y2")
@@ -492,6 +638,18 @@ def execute_capture_actions(
             _adb(
                 adb_path, serial, "shell", "input", "swipe",
                 str(x), str(y), str(x2), str(y2), str(duration_ms), timeout=15,
+            )
+        elif action == "SCROLL_UNTIL_VISIBLE":
+            _scroll_until_visible(
+                adb_path,
+                serial,
+                target_text or "",
+                str(raw_action.get("direction") or "DOWN"),
+                int(raw_action.get("max_scrolls") or 8),
+                timeout_seconds,
+                int(raw_action.get("settle_ms") or 400),
+                float(raw_action.get("scroll_step_fraction") or 0.4),
+                job_dir,
             )
         elif action == "TYPE_TEXT":
             _adb(
@@ -550,10 +708,49 @@ def execute_capture_actions(
                     raise AndroidDSLError(f"ASSERT_PACKAGE failed: {expected_state!r} not focused")
         else:
             raise AndroidDSLError(f"unsupported capture DSL action: {action}")
+    ordered_shots = sorted(shot_starts.items(), key=lambda item: item[1])
+    boundaries_out = [
+        {
+            "shot_id": shot_id,
+            "start_seconds": round(start, 2),
+            "end_seconds": (
+                round(ordered_shots[i + 1][1], 2) if i + 1 < len(ordered_shots) else None
+            ),
+        }
+        for i, (shot_id, start) in enumerate(ordered_shots)
+    ]
     return {
         "keyboard_visible": _keyboard_visible(adb_path, serial),
         "screenshot_files": screenshots,
+        "shot_boundaries": boundaries_out,
     }
+
+
+SCREENRECORD_MAX_SECONDS = 175  # adb shell screenrecord refuses/clamps above ~180s
+
+
+def _estimate_recording_seconds(actions: list[dict[str, Any]]) -> int:
+    """How long to record for a directed multi-action session.
+
+    Found live: a real 38-action directed capture (several TAP_TEXT/
+    ASSERT_VISIBLE/SCROLL_UNTIL_VISIBLE actions, each involving one or more
+    real adb round-trips and UI-dump polling) took ~102s of real wall-clock
+    time to execute, but the old estimate -- summing each action's *declared*
+    `duration_ms` plus a flat 0.3s/action overhead -- came out to ~27s.
+    `screenrecord --time-limit` is fixed for the whole recording once
+    started, so the recording silently stopped a third of the way through
+    the session; every shot after that point had no real footage at all,
+    which is invisible until something (like EDIT_PLAN needing a specific
+    timestamp from every shot) actually needs the later seconds to exist.
+    Real per-action wall-clock cost is dominated by adb round-trips, not by
+    the DSL author's declared duration_ms, so budget a flat per-action cost
+    instead of trusting it.
+    """
+    if not actions:
+        return 10
+    wait_seconds = sum((a.get("duration_ms") or 300) / 1000 for a in actions)
+    per_action_overhead = 3.5 * len(actions)
+    return max(10, min(SCREENRECORD_MAX_SECONDS, int(wait_seconds + per_action_overhead) + 5))
 
 
 def _kill_stray_emulators(avd_name: str) -> None:
@@ -607,6 +804,7 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
     job_dir = workdir / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     apk_path = job_dir / apk_filename
+    client.record_progress(job_id, "downloading APK input")
     try:
         client.download_input(job_id, apk_filename, apk_path)
     except httpx.HTTPError as exc:
@@ -624,6 +822,7 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
     # that starvation is what caused every attempt of job dcfd906c to fail to
     # boot in time.
     _kill_stray_emulators(CANONICAL_AVD_NAME)
+    client.record_progress(job_id, f"booting emulator ({CANONICAL_AVD_NAME})")
     process = start_emulator(sdk, CANONICAL_AVD_NAME)
     try:
         serial = "emulator-5554"
@@ -633,6 +832,7 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
         if boot_wait.returncode != 0 or not wait_for_boot(sdk["adb"], serial):
             client.fail(job_id, "RETRYABLE", "emulator did not report boot completion in time")
             return
+        client.record_progress(job_id, f"installing {apk_filename}")
         install = _adb(sdk["adb"], serial, "install", "-r", str(apk_path), timeout=180)
         stale_install = any(
             marker in (install.stderr or "")
@@ -664,15 +864,14 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
         dsl_actions = payload.get("actions") or []
         remote_video = "/sdcard/adforge-capture.mp4"
         recording_path = job_dir / "recording.mp4"
-        if dsl_actions:
-            wait_seconds = sum((a.get("duration_ms") or 300) / 1000 for a in dsl_actions)
-            recording_seconds = max(10, min(60, int(wait_seconds + 0.3 * len(dsl_actions)) + 4))
-        else:
-            recording_seconds = 10
+        recording_seconds = _estimate_recording_seconds(dsl_actions)
         recording_ok = False
         dsl_result: dict[str, Any] = {}
         dsl_error: str | None = None
         for _capture_attempt in range(1, 4):
+            client.record_progress(
+                job_id, f"recording attempt {_capture_attempt}/3 ({recording_seconds}s budget)"
+            )
             if dsl_actions and _capture_attempt > 1:
                 # A directed DSL script is a stateful sequence (dismiss
                 # onboarding, add a product, save it, ...), not idempotent
@@ -709,7 +908,10 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
                 # Android DSL action sequence instead of injecting random touches.
                 try:
                     dsl_result = execute_capture_actions(
-                        sdk["adb"], serial, dsl_actions, job_dir
+                        sdk["adb"], serial, dsl_actions, job_dir,
+                        shot_boundaries=payload.get("shot_boundaries"),
+                        recording_started_at=started_at,
+                        on_progress=lambda msg: client.record_progress(job_id, msg),
                     )
                     dsl_error = None
                 except AndroidDSLError as exc:
@@ -764,6 +966,7 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
             "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "directed": bool(dsl_actions),
             "keyboard_visible": dsl_result.get("keyboard_visible"),
+            "shot_boundaries": dsl_result.get("shot_boundaries"),
         }
         (job_dir / "capture.json").write_text(json.dumps(capture_info, indent=2))
 
@@ -772,6 +975,7 @@ def run_android_capture(client: AgentClient, job: dict[str, Any], workdir: Path)
         checksums = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in artifacts}
         checksums_path = job_dir / "checksums.json"
         checksums_path.write_text(json.dumps(checksums, indent=2))
+        client.record_progress(job_id, f"uploading {len(artifacts) + 1} artifacts")
         for artifact_path in [*artifacts, checksums_path]:
             client.upload_artifact(job_id, artifact_path)
         client.complete(job_id)
@@ -1103,6 +1307,20 @@ class AgentClient:
             f"/api/worker/jobs/{job_id}/artifacts", data={"checksum": checksum}, files=files
         )
         response.raise_for_status()
+
+    def record_progress(self, job_id: str, detail: str) -> None:
+        """Best-effort: report what this job is doing right now (surfaced on
+        the web UI's Worker Activity page) so an operator watching a long
+        directed capture isn't staring at a bare RUNNING status. A network
+        hiccup on a progress ping must never fail, or even interrupt, the
+        real capture -- swallow every transport error here.
+        """
+        try:
+            self.client.post(
+                f"/api/worker/jobs/{job_id}/progress", json={"detail": detail}
+            ).raise_for_status()
+        except httpx.HTTPError:
+            pass
 
     def complete(self, job_id: str) -> None:
         self.client.post(f"/api/worker/jobs/{job_id}/complete").raise_for_status()
