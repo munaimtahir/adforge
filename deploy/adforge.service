@@ -19,7 +19,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/opt/adforge/data /opt/adforge/products /opt/adforge/campaigns /opt/adforge/assets /opt/adforge/exports /opt/adforge/browser-profiles /opt/adforge/logs /opt/adforge/backups /opt/adforge/temp
+ReadWritePaths=/opt/adforge/data /opt/adforge/products /opt/adforge/campaigns /opt/adforge/assets /opt/adforge/exports /opt/adforge/browser-profiles /opt/adforge/logs /opt/adforge/backups /opt/adforge/temp /opt/adforge/imports
 
 [Install]
 WantedBy=multi-user.target
