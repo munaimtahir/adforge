@@ -1,0 +1,25 @@
+{% extends "base.html" %}{% block content %}<meta http-equiv="refresh" content="5"><p class="eyebrow">FLEET</p><h1>Worker activity</h1>
+<section class="card">
+  <h2>Workers</h2>
+  {% for node in nodes %}
+  <div class="row">
+    <span><a href="/settings/workers/{{ node.id }}">{{ node.name }}</a><small>{{ node.capabilities | join(', ') }} · last heartbeat {{ node.last_heartbeat_at or 'never' }}</small>{% if node.active_job_id and node.active_job_id in latest_by_job %}<small><b>Current action:</b> {{ latest_by_job[node.active_job_id].details.detail or latest_by_job[node.active_job_id].event_type }}</small>{% endif %}</span>
+    <span class="status {{ node.status.value|lower }}">{{ node.status.value }}</span>
+  </div>
+  {% else %}
+  <p class="muted">No workers registered.</p>
+  {% endfor %}
+</section>
+<section class="card">
+  <h2>Recent activity</h2>
+  <p class="muted">Most recent 200 events across all campaigns.</p>
+  {% for event in events %}
+  <div class="row">
+    <span>{{ event.created_at }} · {{ campaigns_by_id[event.campaign_id].name if event.campaign_id in campaigns_by_id else event.campaign_id[:8] }} · {{ event.stage }}<small>{{ event.event_type }}{% if event.details.detail %} -- {{ event.details.detail }}{% endif %}</small></span>
+    <span class="status {{ event.status|lower }}">{{ event.status }}</span>
+  </div>
+  {% else %}
+  <p class="muted">No activity recorded yet.</p>
+  {% endfor %}
+</section>
+{% endblock %}

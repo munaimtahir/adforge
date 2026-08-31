@@ -2,22 +2,30 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from adforge.auth import hash_password
+from adforge.campaign_stages import FINAL_RENDER_RELATIVE_PATH
 from adforge.models import (
     Campaign,
     CampaignState,
     CampaignTask,
+    LedgerEvent,
     Product,
+    QCResult,
+    Render,
     TaskState,
     TruthReadiness,
     WorkerJob,
     WorkerJobStatus,
+    WorkerNode,
+    WorkerStatus,
 )
+from adforge.storage import sha256_file
 from adforge.web import WebContext, create_app
 
 PASSWORD = "fixture-password-123"  # noqa: S105
@@ -520,6 +528,37 @@ def test_retry_resets_the_same_task_row_so_campaign_worker_will_find_it(
     assert all_tasks[0].idempotency_key == "stage:strategy:v1"
 
 
+def test_start_on_a_campaign_already_past_created_returns_409_not_500(
+    client: TestClient,
+) -> None:
+    """Regression found live: a slow first "Start" (the synchronous pipeline
+    run inside this request can take minutes for real AI calls) can still be
+    executing server-side after the client gives up on a proxy timeout. A
+    second click then hits a campaign already past CREATED (e.g. BLOCKED at
+    STRATEGY) and used to raise an unhandled TransitionError straight into a
+    500 instead of a friendly, actionable response.
+    """
+    csrf = login(client)
+    context: WebContext = client.app.state.context
+    campaign = context.services.campaigns.save(
+        Campaign(
+            product_id="product-1",
+            name="Already started",
+            brief="brief",
+            state=CampaignState.BLOCKED,
+            resume_state=CampaignState.STRATEGY,
+            active=False,
+        )
+    )
+
+    response = client.post(
+        f"/campaigns/{campaign.id}/start", data={"csrf": csrf}, follow_redirects=False
+    )
+
+    assert response.status_code == 409
+    assert "illegal transition" in response.text
+
+
 def test_one_active_campaign_is_enforced_in_ux_and_action(client: TestClient) -> None:
     csrf = login(client)
     context: WebContext = client.app.state.context
@@ -556,3 +595,254 @@ def test_csrf_is_required_for_state_changes(client: TestClient) -> None:
         },
     )
     assert response.status_code == 403
+
+
+def test_campaign_detail_shows_the_full_pipeline_before_any_stage_starts(
+    client: TestClient,
+) -> None:
+    """Regression: the old "Timeline" card only listed `CampaignTask` rows
+    that already existed, so a freshly created campaign showed an empty
+    list -- an operator had no way to see the pipeline's shape until stages
+    started completing one by one. Every stage must render up front.
+    """
+    login(client)
+    context: WebContext = client.app.state.context
+    campaign = context.services.campaigns.save(
+        Campaign(product_id="product-1", name="Fresh", brief="brief")
+    )
+
+    page = client.get(f"/campaigns/{campaign.id}")
+
+    assert page.status_code == 200
+    for stage in ("STRATEGY", "STORYBOARD", "APP_CAPTURE", "FINAL_RENDER", "EXPORT"):
+        assert stage in page.text
+    assert "NOT STARTED" in page.text
+
+
+def test_campaign_detail_shows_inline_retry_on_the_blocked_stage_row(
+    client: TestClient,
+) -> None:
+    login(client)
+    context: WebContext = client.app.state.context
+    campaign = context.services.campaigns.save(
+        Campaign(
+            product_id="product-1",
+            name="Blocked stage",
+            brief="brief",
+            state=CampaignState.BLOCKED,
+            resume_state=CampaignState.STRATEGY,
+        )
+    )
+    context.services.tasks.save(
+        CampaignTask(
+            campaign_id=campaign.id,
+            task_type="strategy",
+            idempotency_key="stage:strategy:v1",
+            state=TaskState.BLOCKED,
+            attempt=3,
+            max_attempts=3,
+            failure_summary="provider unavailable",
+        )
+    )
+
+    page = client.get(f"/campaigns/{campaign.id}")
+
+    assert page.status_code == 200
+    assert "provider unavailable" in page.text
+    assert 'action="/tasks/' in page.text
+
+
+def test_campaign_detail_shows_manual_complete_form_inline_on_its_stage(
+    client: TestClient,
+) -> None:
+    login(client)
+    context: WebContext = client.app.state.context
+    campaign = context.services.campaigns.save(
+        Campaign(product_id="product-1", name="Waiting on Flow", brief="brief")
+    )
+    task = context.services.tasks.save(
+        CampaignTask(
+            campaign_id=campaign.id,
+            task_type="asset_generation",
+            idempotency_key="stage:asset_generation:v1",
+        )
+    )
+    context.services.worker_jobs.save(
+        WorkerJob(
+            campaign_id=campaign.id,
+            task_id=task.id,
+            capability="flow_generation",
+            payload={"prompt": "A fictional demo clip", "output_filename": "scene.mp4"},
+            idempotency_key="manual-inline-key",
+        )
+    )
+
+    page = client.get(f"/campaigns/{campaign.id}")
+
+    assert page.status_code == 200
+    assert "A fictional demo clip" in page.text
+    assert "/worker-jobs/" in page.text
+    assert "Upload &amp; complete" in page.text
+
+
+def test_export_download_serves_the_canonical_export_not_the_workspace_copy(
+    client: TestClient,
+) -> None:
+    login(client)
+    context: WebContext = client.app.state.context
+    campaign = context.services.campaigns.save(
+        Campaign(product_id="product-1", name="Exported", brief="brief")
+    )
+    content = b"real-final-mp4-bytes"
+    export_dir = context.services.storage.root / "exports" / campaign.id
+    export_dir.mkdir(parents=True)
+    export_path = export_dir / "final.mp4"
+    export_path.write_bytes(content)
+    context.services.renders.save(
+        Render(
+            campaign_id=campaign.id,
+            status="COMPLETE",
+            spec_path="edit/edit_plan.v2.json",
+            output_path=FINAL_RENDER_RELATIVE_PATH,
+            aspect_ratio="9:16",
+            duration_seconds=20,
+            checksum=sha256_file(export_path),
+        )
+    )
+
+    response = client.get(f"/campaigns/{campaign.id}/export/download")
+
+    assert response.status_code == 200
+    assert response.content == content
+
+
+def test_export_download_rejects_a_checksum_mismatch_instead_of_serving_stale_bytes(
+    client: TestClient,
+) -> None:
+    login(client)
+    context: WebContext = client.app.state.context
+    campaign = context.services.campaigns.save(
+        Campaign(product_id="product-1", name="Corrupted export", brief="brief")
+    )
+    export_dir = context.services.storage.root / "exports" / campaign.id
+    export_dir.mkdir(parents=True)
+    (export_dir / "final.mp4").write_bytes(b"tampered-bytes")
+    context.services.renders.save(
+        Render(
+            campaign_id=campaign.id,
+            status="COMPLETE",
+            spec_path="edit/edit_plan.v2.json",
+            output_path=FINAL_RENDER_RELATIVE_PATH,
+            aspect_ratio="9:16",
+            duration_seconds=20,
+            checksum="0" * 64,
+        )
+    )
+
+    response = client.get(f"/campaigns/{campaign.id}/export/download")
+
+    assert response.status_code == 500
+
+
+def test_export_download_404s_when_no_final_render_exists(client: TestClient) -> None:
+    login(client)
+    context: WebContext = client.app.state.context
+    campaign = context.services.campaigns.save(
+        Campaign(product_id="product-1", name="Not exported", brief="brief")
+    )
+
+    response = client.get(f"/campaigns/{campaign.id}/export/download")
+
+    assert response.status_code == 404
+
+
+def make_clip(path: Path, *, duration: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(  # noqa: S603, S607 - test fixture, fixed argv
+        [
+            "/usr/bin/ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", f"color=c=blue:s=640x360:d={duration}:r=30",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path),
+        ],
+        check=True,
+    )
+
+
+def test_outputs_page_shows_qc_and_probe_metadata_for_the_final_export(
+    client: TestClient,
+) -> None:
+    login(client)
+    context: WebContext = client.app.state.context
+    campaign = context.services.campaigns.save(
+        Campaign(product_id="product-1", name="Probed export", brief="brief")
+    )
+    export_dir = context.services.storage.root / "exports" / campaign.id
+    export_path = export_dir / "final.mp4"
+    make_clip(export_path, duration=2)
+    render_record = context.services.renders.save(
+        Render(
+            campaign_id=campaign.id,
+            status="COMPLETE",
+            spec_path="edit/edit_plan.v2.json",
+            output_path=FINAL_RENDER_RELATIVE_PATH,
+            aspect_ratio="9:16",
+            duration_seconds=2,
+            checksum=sha256_file(export_path),
+        )
+    )
+    context.services.qc_results.save(
+        QCResult(
+            campaign_id=campaign.id,
+            render_id=render_record.id,
+            passed=True,
+            blockers=[],
+            advisories=["minor pacing note"],
+        )
+    )
+
+    page = client.get("/outputs")
+
+    assert page.status_code == 200
+    assert "Probed export" in page.text
+    assert "PASSED" in page.text
+    assert "h264" in page.text
+    assert f"/campaigns/{campaign.id}/export/download" in page.text
+
+
+def test_worker_activity_shows_current_action_and_recent_events(client: TestClient) -> None:
+    login(client)
+    context: WebContext = client.app.state.context
+    campaign = context.services.campaigns.save(
+        Campaign(product_id="product-1", name="Watched campaign", brief="brief")
+    )
+    node = context.services.worker_nodes.save(
+        WorkerNode(
+            name="adforge-linux-01",
+            agent_version="0.1.0",
+            os="Linux",
+            architecture="x86_64",
+            status=WorkerStatus.ONLINE,
+            capabilities=["android_capture"],
+            active_job_id="job-123",
+        )
+    )
+    context.services.ledger_events.save(
+        LedgerEvent(
+            campaign_id=campaign.id,
+            stage="WORKER_JOB",
+            event_type="worker_job_progress",
+            status="RUNNING",
+            details={
+                "job_id": "job-123",
+                "worker_id": node.id,
+                "detail": "action 14/38: TAP_TEXT Purchase Date",
+            },
+        )
+    )
+
+    page = client.get("/worker-activity")
+
+    assert page.status_code == 200
+    assert "adforge-linux-01" in page.text
+    assert "action 14/38: TAP_TEXT Purchase Date" in page.text
+    assert "Watched campaign" in page.text

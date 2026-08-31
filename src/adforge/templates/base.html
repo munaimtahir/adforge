@@ -9,7 +9,7 @@
 <body>
   <header><a class="brand" href="/">ADFORGE</a><nav>
     <a href="/products">Products</a><a href="/campaigns">Queue</a>
-    <a href="/outputs">Outputs</a><a href="/settings">Settings</a>
+    <a href="/outputs">Outputs</a><a href="/worker-activity">Activity</a><a href="/settings">Settings</a>
     {% if csrf %}<form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Sign out</button></form>{% endif %}
   </nav></header>
   <main>{% block content %}{% endblock %}</main>

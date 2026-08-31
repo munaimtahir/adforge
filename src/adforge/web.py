@@ -8,7 +8,17 @@ from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -17,6 +27,7 @@ from adforge.android import APKIngestor, APKValidationError
 from adforge.auth import SessionSigner, verify_password
 from adforge.bootstrap import ensure_warranty_vault_product
 from adforge.campaign_stages import (
+    FINAL_RENDER_RELATIVE_PATH,
     build_asset_plan_handler,
     build_audio_production_handler,
     build_draft_render_handler,
@@ -34,6 +45,7 @@ from adforge.health import collect_capabilities, platform_status
 from adforge.models import (
     Campaign,
     CampaignState,
+    CampaignTask,
     Product,
     TaskState,
     TruthReadiness,
@@ -44,9 +56,9 @@ from adforge.models import (
 from adforge.orchestrator import ActiveCampaignError, Orchestrator, TransitionError
 from adforge.product_truth import ProductTruthError, ProductTruthService
 from adforge.providers import ClaudeCodeProvider, CodexCLIProvider, ProviderRouter
-from adforge.renderer import FFmpegRenderer
+from adforge.renderer import FFmpegRenderer, RenderError
 from adforge.services import Services
-from adforge.storage import UnsafePathError, safe_component
+from adforge.storage import UnsafePathError, safe_component, sha256_file
 from adforge.worker import CampaignWorker
 from adforge.worker_api import WorkerJobService, build_worker_router
 from adforge.worker_auth import issue_token
@@ -345,8 +357,40 @@ def create_app(
             if job.status
             in {WorkerJobStatus.PENDING, WorkerJobStatus.CLAIMED, WorkerJobStatus.FAILED}
         ]
+        jobs_by_task_id = {job.task_id: job for job in open_jobs if job.task_id}
+        stages = pipeline_stage_rows(
+            list(context.campaign_worker.handlers.keys()), tasks, jobs_by_task_id
+        )
+        export_path = context.services.storage.root / "exports" / campaign.id / "final.mp4"
         return render(
-            request, "campaign_detail.html", campaign=campaign, tasks=tasks, open_jobs=open_jobs
+            request,
+            "campaign_detail.html",
+            campaign=campaign,
+            stages=stages,
+            open_jobs=open_jobs,
+            export_ready=export_path.is_file(),
+        )
+
+    @app.get("/campaigns/{campaign_id}/export/download")
+    def download_export(campaign_id: str, _: Session) -> FileResponse:
+        campaign = context.services.campaigns.get(campaign_id)
+        if campaign is None:
+            raise HTTPException(status_code=404)
+        finals = [
+            item
+            for item in context.services.renders.find_by("campaign_id", campaign_id)
+            if item.output_path == FINAL_RENDER_RELATIVE_PATH
+        ]
+        if not finals:
+            raise HTTPException(status_code=404, detail="no final render exists for this campaign")
+        render_record = sorted(finals, key=lambda item: item.created_at)[-1]
+        export_path = context.services.storage.root / "exports" / campaign_id / "final.mp4"
+        if not export_path.is_file():
+            raise HTTPException(status_code=404, detail="export has not been produced yet")
+        if render_record.checksum and sha256_file(export_path) != render_record.checksum:
+            raise HTTPException(status_code=500, detail="exported file checksum mismatch")
+        return FileResponse(
+            export_path, filename=f"{campaign_id[:8]}-final.mp4", media_type="video/mp4"
         )
 
     @app.post("/worker-jobs/{job_id}/manual-complete")
@@ -387,7 +431,10 @@ def create_app(
 
     @app.post("/campaigns/{campaign_id}/start")
     def start_campaign(
-        campaign_id: str, session: Session, csrf: Annotated[str, Form()]
+        campaign_id: str,
+        session: Session,
+        csrf: Annotated[str, Form()],
+        background_tasks: BackgroundTasks,
     ) -> RedirectResponse:
         require_csrf(session, csrf)
         campaign = context.services.campaigns.get(campaign_id)
@@ -403,23 +450,39 @@ def create_app(
             context.orchestrator.transition(
                 campaign_id, CampaignState.PRODUCT_TRUTH_VALIDATION
             )
-        except ActiveCampaignError as exc:
+        except (TransitionError, ActiveCampaignError) as exc:
+            # Found live: a slow first "Start" (the pipeline run can take
+            # minutes for real AI calls) can still be executing server-side
+            # after the client gives up with a proxy timeout: a second click
+            # hits a campaign that already moved past CREATED, and this
+            # raised an unhandled TransitionError straight into a 500 instead
+            # of a friendly "already started" response.
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        context.campaign_worker.run(campaign_id)
+        # Found live: running the pipeline synchronously in-request routinely
+        # exceeds the reverse proxy's timeout (real STRATEGY/SCRIPT/STORYBOARD
+        # calls can take minutes combined) -- the browser reports a 504 while
+        # the server keeps working underneath it, which reads as "it's
+        # broken" even though the campaign is actually progressing fine.
+        # Return immediately and let the pipeline run in the background; the
+        # page's own auto-refresh (campaign_detail.html) picks up progress.
+        background_tasks.add_task(context.campaign_worker.run, campaign_id)
         return RedirectResponse(
             f"/campaigns/{campaign_id}", status_code=status.HTTP_303_SEE_OTHER
         )
 
     @app.post("/campaigns/{campaign_id}/resume")
     def resume_campaign(
-        campaign_id: str, session: Session, csrf: Annotated[str, Form()]
+        campaign_id: str,
+        session: Session,
+        csrf: Annotated[str, Form()],
+        background_tasks: BackgroundTasks,
     ) -> RedirectResponse:
         require_csrf(session, csrf)
         try:
             context.orchestrator.resume(campaign_id)
         except (TransitionError, ActiveCampaignError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        context.campaign_worker.run(campaign_id)
+        background_tasks.add_task(context.campaign_worker.run, campaign_id)
         return RedirectResponse(
             f"/campaigns/{campaign_id}", status_code=status.HTTP_303_SEE_OTHER
         )
@@ -474,7 +537,38 @@ def create_app(
 
     @app.get("/outputs", response_class=HTMLResponse)
     def outputs(request: Request, _: Session) -> HTMLResponse:
-        return render(request, "outputs.html", renders=context.services.renders.list())
+        renders = context.services.renders.list()
+        campaigns_by_id = {item.id: item for item in context.services.campaigns.list()}
+        export_info: dict[str, dict[str, Any]] = {}
+        for render_record in renders:
+            if render_record.output_path != FINAL_RENDER_RELATIVE_PATH:
+                continue
+            export_path = (
+                context.services.storage.root / "exports" / render_record.campaign_id / "final.mp4"
+            )
+            if not export_path.is_file():
+                continue
+            qc_results = sorted(
+                context.services.qc_results.find_by("campaign_id", render_record.campaign_id),
+                key=lambda item: item.created_at,
+            )
+            probe = None
+            try:
+                probe = context.renderer.probe(export_path, expect_audio=False)
+            except RenderError:
+                probe = None
+            export_info[render_record.id] = {
+                "qc": qc_results[-1] if qc_results else None,
+                "probe": probe,
+                "size_bytes": export_path.stat().st_size,
+            }
+        return render(
+            request,
+            "outputs.html",
+            renders=renders,
+            campaigns_by_id=campaigns_by_id,
+            export_info=export_info,
+        )
 
     @app.get("/outputs/{render_id}/download")
     def download(render_id: str, _: Session) -> FileResponse:
@@ -508,6 +602,28 @@ def create_app(
         require_csrf(session, csrf)
         collect_capabilities(context.services, force_slow=True)
         return RedirectResponse("/settings", status_code=status.HTTP_303_SEE_OTHER)
+
+    @app.get("/worker-activity", response_class=HTMLResponse)
+    def worker_activity(request: Request, _: Session) -> HTMLResponse:
+        context.worker_jobs.sweep_offline()
+        nodes = context.services.worker_nodes.list()
+        events = sorted(
+            context.services.ledger_events.list(), key=lambda item: item.created_at, reverse=True
+        )[:200]
+        campaigns_by_id = {item.id: item for item in context.services.campaigns.list()}
+        latest_by_job: dict[str, Any] = {}
+        for event in events:
+            job_id = event.details.get("job_id")
+            if job_id and job_id not in latest_by_job:
+                latest_by_job[job_id] = event
+        return render(
+            request,
+            "worker_activity.html",
+            nodes=nodes,
+            events=events,
+            campaigns_by_id=campaigns_by_id,
+            latest_by_job=latest_by_job,
+        )
 
     @app.get("/settings/workers", response_class=HTMLResponse)
     def workers(request: Request, _: Session) -> HTMLResponse:
@@ -683,3 +799,35 @@ def resolve_manual_artifact_filename(
     suffix = Path(candidate).suffix.lower().lstrip(".")
     safe_suffix = suffix if re.fullmatch(r"[a-z0-9]{1,10}", suffix) else "bin"
     return f"upload-{uuid4().hex}.{safe_suffix}"
+
+
+def pipeline_stage_rows(
+    stage_order: list[CampaignState],
+    tasks: list[CampaignTask],
+    jobs_by_task_id: dict[str, WorkerJob],
+) -> list[dict[str, Any]]:
+    """One row per pipeline stage, in fixed order, for the campaign Progress
+    page -- unlike the old "Timeline" (which only listed `CampaignTask` rows
+    that already exist), every stage always renders, including ones that
+    haven't started yet, so the operator always sees the whole pipeline
+    shape rather than a list that silently grows as the campaign advances.
+
+    `REPAIR` is special: its `CampaignTask.task_type` is `repair:<stage>`
+    (`Orchestrator.create_repair_task`), not the literal stage name, and a
+    QC failure can create several versioned repair tasks -- show only the
+    most recent one.
+    """
+    tasks_by_type = {task.task_type: task for task in tasks}
+    rows = []
+    for state in stage_order:
+        if state == CampaignState.REPAIR:
+            repairs = sorted(
+                (task for task in tasks if task.task_type.startswith("repair:")),
+                key=lambda item: item.created_at,
+            )
+            task = repairs[-1] if repairs else None
+        else:
+            task = tasks_by_type.get(state.value.lower())
+        job = jobs_by_task_id.get(task.id) if task is not None else None
+        rows.append({"state": state, "task": task, "job": job})
+    return rows

@@ -1,1 +1,58 @@
-{% extends "base.html" %}{% block content %}<div class="hero"><div><p class="eyebrow">CAMPAIGN {{ campaign.id[:8] }}</p><h1>{{ campaign.name }}</h1></div><span class="status large {{ campaign.state.value|lower }}">{{ campaign.state.value }}</span></div><div class="tabs"><a href="/campaigns/{{ campaign.id }}/assets">Assets</a><a href="/campaigns/{{ campaign.id }}/ledger">Ledger</a></div><section class="card"><h2>Brief</h2><p>{{ campaign.brief }}</p>{% if campaign.state.value == 'CREATED' %}<form method="post" action="/campaigns/{{ campaign.id }}/start"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="primary">Start production</button></form>{% elif campaign.state.value in ['PAUSED','BLOCKED','WAITING_FOR_EXTERNAL_ASSET','WAITING_FOR_USER'] %}<form method="post" action="/campaigns/{{ campaign.id }}/resume"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="primary">Resume</button></form>{% endif %}</section><section class="card"><h2>Timeline</h2>{% for task in tasks %}<div class="row"><span>{{ task.task_type }} · attempt {{ task.attempt }}/{{ task.max_attempts }}</span><span><b class="status {{ task.state.value|lower }}">{{ task.state.value }}</b>{% if task.state.value in ['BLOCKED','FAILED'] %}<form class="inline" method="post" action="/tasks/{{ task.id }}/retry"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Retry</button></form>{% endif %}</span></div>{% else %}<p class="muted">No stage tasks have run.</p>{% endfor %}</section>{% if open_jobs %}<section class="card"><h2>Worker jobs</h2><p class="muted">Generate the asset yourself (e.g. paste the prompt into Flow), then upload the resulting file here to complete the job manually -- the campaign continues automatically exactly as if a worker had finished it.</p>{% for job in open_jobs %}<div class="row worker-job"><div><p><b>{{ job.capability }}</b> · <span class="status {{ job.status.value|lower }}">{{ job.status.value }}</span> · attempt {{ job.attempt }}/{{ job.max_attempts }}</p>{% if job.capability == 'flow_generation' %}<dl class="params"><dt>Length</dt><dd>{% if job.payload.duration_seconds %}~{{ job.payload.duration_seconds }}s{% else %}not specified -- match the storyboard scene length{% endif %}</dd><dt>Aspect ratio</dt><dd>{{ job.payload.aspect_ratio or '9:16 (vertical)' }}</dd><dt>Quality</dt><dd>720p recommended; 360p is acceptable if Flow credits are limited. Don't generate above 720p -- this pipeline re-encodes everything for the final export, so extra resolution just costs more credits for no visible benefit.</dd></dl>{% endif %}{% if job.payload.prompt %}<p class="muted">Prompt -- paste this into Flow exactly as written, then set the length/quality above using Flow's own controls:</p><pre class="prompt">{{ job.payload.prompt }}</pre>{% endif %}{% if job.payload.output_filename %}<p class="muted">Expected file: {{ job.payload.output_filename }}</p>{% endif %}{% if job.failure_summary %}<p class="notice blocked">{{ job.failure_summary }}</p>{% endif %}</div><form class="upload-form" method="post" action="/worker-jobs/{{ job.id }}/manual-complete" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="file" name="files" required multiple><button class="primary">Upload &amp; complete</button></form></div>{% endfor %}</section>{% endif %}{% endblock %}
+{% extends "base.html" %}{% block content %}
+{% if not campaign.state.value in ['COMPLETE', 'PAUSED'] or open_jobs %}<meta http-equiv="refresh" content="10">{% endif %}
+<div class="hero"><div><p class="eyebrow">CAMPAIGN {{ campaign.id[:8] }}</p><h1>{{ campaign.name }}</h1></div><span class="status large {{ campaign.state.value|lower }}">{{ campaign.state.value }}</span></div>
+<div class="tabs"><a href="/campaigns/{{ campaign.id }}/assets">Assets</a><a href="/campaigns/{{ campaign.id }}/ledger">Ledger</a><a href="/worker-activity">Worker activity</a></div>
+<section class="card">
+  <h2>Brief</h2>
+  <p>{{ campaign.brief }}</p>
+  {% if campaign.state.value == 'CREATED' %}
+  <form method="post" action="/campaigns/{{ campaign.id }}/start"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="primary">Start production</button></form>
+  {% elif campaign.state.value in ['PAUSED','BLOCKED','WAITING_FOR_EXTERNAL_ASSET','WAITING_FOR_USER'] %}
+  <form method="post" action="/campaigns/{{ campaign.id }}/resume"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="primary">Resume</button></form>
+  {% endif %}
+</section>
+{% if export_ready %}
+<section class="card"><h2>Final ad ready</h2><p class="muted">The finished, exported MP4 is ready to download.</p><a class="button primary" href="/campaigns/{{ campaign.id }}/export/download">Download final ad</a></section>
+{% endif %}
+<section class="card">
+  <h2>Progress</h2>
+  {% for row in stages %}
+  <div class="row stage">
+    <div>
+      <span>{{ row.state.value }}</span>
+      {% if row.task %}<small>attempt {{ row.task.attempt }}/{{ row.task.max_attempts }}</small>{% endif %}
+    </div>
+    <div>
+      {% if row.task %}
+      <b class="status {{ row.task.state.value|lower }}">{{ row.task.state.value }}</b>
+      {% if row.task.state.value in ['BLOCKED','FAILED'] %}
+      <form class="inline" method="post" action="/tasks/{{ row.task.id }}/retry"><input type="hidden" name="csrf" value="{{ csrf }}"><button>Retry</button></form>
+      {% endif %}
+      {% else %}
+      <span class="status muted">NOT STARTED</span>
+      {% endif %}
+    </div>
+  </div>
+  {% if row.task and row.task.failure_summary %}<p class="notice blocked">{{ row.task.failure_summary }}</p>{% endif %}
+  {% if row.job %}
+  <div class="row worker-job">
+    <div>
+      <p><b>{{ row.job.capability }}</b> · <span class="status {{ row.job.status.value|lower }}">{{ row.job.status.value }}</span> · attempt {{ row.job.attempt }}/{{ row.job.max_attempts }}</p>
+      <p class="muted">This stage needs a real asset generated outside AdForge (e.g. paste the prompt into Flow), then upload the resulting file here to complete it -- the campaign continues automatically exactly as if a worker had finished it.</p>
+      {% if row.job.capability == 'flow_generation' %}
+      <dl class="params">
+        <dt>Length</dt><dd>{% if row.job.payload.duration_seconds %}~{{ row.job.payload.duration_seconds }}s{% else %}not specified -- match the storyboard scene length{% endif %}</dd>
+        <dt>Aspect ratio</dt><dd>{{ row.job.payload.aspect_ratio or '9:16 (vertical)' }}</dd>
+        <dt>Quality</dt><dd>720p recommended; 360p is acceptable if Flow credits are limited. Don't generate above 720p -- this pipeline re-encodes everything for the final export, so extra resolution just costs more credits for no visible benefit.</dd>
+      </dl>
+      {% endif %}
+      {% if row.job.payload.prompt %}<p class="muted">Prompt -- paste this into Flow exactly as written, then set the length/quality above using Flow's own controls:</p><pre class="prompt">{{ row.job.payload.prompt }}</pre>{% endif %}
+      {% if row.job.payload.output_filename %}<p class="muted">Expected file: {{ row.job.payload.output_filename }}</p>{% endif %}
+      {% if row.job.failure_summary %}<p class="notice blocked">{{ row.job.failure_summary }}</p>{% endif %}
+    </div>
+    <form class="upload-form" method="post" action="/worker-jobs/{{ row.job.id }}/manual-complete" enctype="multipart/form-data"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="file" name="files" required multiple><button class="primary">Upload &amp; complete</button></form>
+  </div>
+  {% endif %}
+  {% endfor %}
+</section>
+{% endblock %}
