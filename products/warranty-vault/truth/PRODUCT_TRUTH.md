@@ -82,14 +82,31 @@ demo_workflows:
       or Laptop', 'Electronics', 'Furniture', 'Home Appliance', 'Kitchen
       Appliance', 'Mobile Phone', 'Other', 'Personal Care', 'Tools' -- there
       is no generic 'Appliances' option, use 'Home Appliance' or 'Kitchen
-      Appliance' instead. Purchase Date is required and defaults to today.
-      Switch to the 'Coverage' tab and enter a Warranty Duration value with
-      unit Days/Months/Years (required to save). Tap 'Save Product'.
+      Appliance' instead. Purchase Date is required and defaults to today;
+      tapping the 'Purchase Date' field opens a date-picker dialog ('Select
+      date' with 'OK'/'Cancel') that covers the rest of the form -- it must
+      be dismissed with 'OK' before any other tab or field can be reached,
+      even to accept the default date. The Coverage tab is a long scrollable
+      form (Main Warranty fields, then Warranty Duration, then Component
+      warranty, then the separate Return Tracking section, then Insurance,
+      then 'Save Product' at the very bottom) -- both Warranty Duration and
+      'Save Product' are typically below the fold from the top of the tab
+      and each may need its own SCROLL_UNTIL_VISIBLE rather than a single
+      guessed scroll distance. Enter a Warranty Duration value with unit
+      Days/Months/Years (required to save). Tap 'Save Product'.
   - name: "Attach a receipt to a product"
     steps: >-
       Open a saved product from Home or the Products tab, tap the edit
       (pencil-grid) icon to reopen 'Edit Product', switch to the 'Documents'
-      tab, and tap 'Add receipt' under 'Receipt'.
+      tab, and tap 'Add receipt' under 'Receipt'. This launches Android's own
+      system document picker (not an in-app screen) -- its exact UI (root
+      list, filenames) is device/OS state, not app content, so a directed
+      capture cannot reliably select a specific file from it. Pressing the
+      hardware/software Back key exactly twice from the open picker dismisses
+      it and returns to the Home dashboard (one Back closes the picker back
+      to the Edit Product Documents tab; a second Back exits Edit Product
+      straight to Home); a third Back overshoots past the app entirely to the
+      device home screen/launcher.
   - name: "Check dashboard status"
     steps: >-
       Open the Home screen to see the 'Products', 'Expiring Soon', 'Return
@@ -108,6 +125,12 @@ evidence:
   - claim: "Lets users optionally record brand, purchase location, serial number, seller contact, and notes on a product record"
     status: CURRENT
     source: "Direct UI walkthrough, New Product > Product tab: Brand, Seller Contact, Serial Number, Location, Notes fields observed, all unmarked (optional)."
+  - claim: "Tapping Add receipt opens Android's system document picker; two Back presses dismiss it and return to Home, a third exits the app"
+    status: CURRENT
+    source: "Live directed-capture diagnostic on production APK v1.0.5 (versionCode 5), AdForge Android emulator, 2026-08-30: after Save Product > Edit > Documents > Add receipt, a UI dump showed Android's DocumentsUI file picker (roots: Recent/Images/Videos/Audio/Documents), not app content; probing BACK presses one at a time showed Back #1 returns to the Edit Product Documents tab, Back #2 lands on the Warranty Vault Home dashboard (Products/Expiring Soon/Return Deadlines/Active warranties/Recent products all visible), and Back #3 exits to the device launcher."
+  - claim: "Tapping Purchase Date opens a date-picker dialog that must be confirmed with OK before other tabs/fields are reachable"
+    status: CURRENT
+    source: "Live directed-capture diagnostic on production APK v1.0.5 (versionCode 5), AdForge Android emulator, 2026-08-30: tapping 'Purchase Date' opened a 'Select date' dialog with 'OK'/'Cancel'; a subsequent TAP_TEXT on 'Coverage' failed with the dialog still open and covering the tab bar, resolved by tapping 'OK' first."
   - claim: "Lets users record a main warranty with a required duration in days, months, or years, plus optional provider, provider contact, coverage notes, start date, and expiry date"
     status: CURRENT
     source: "Direct UI walkthrough, New Product > Coverage tab: Main Warranty section with Provider, Provider Contact, Coverage Notes, Start Date, Expiry Date fields, and a required 'Warranty Duration *' field with DAYS/MONTHS/YEARS selector; attempting Save without it produced the in-app error 'Warranty duration is required.'"
