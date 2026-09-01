@@ -489,7 +489,10 @@ def create_app(
 
     @app.post("/tasks/{task_id}/retry")
     def retry_task(
-        task_id: str, session: Session, csrf: Annotated[str, Form()]
+        task_id: str,
+        session: Session,
+        csrf: Annotated[str, Form()],
+        background_tasks: BackgroundTasks,
     ) -> RedirectResponse:
         require_csrf(session, csrf)
         task = context.services.tasks.get(task_id)
@@ -513,6 +516,14 @@ def create_app(
                 update={"attempt": 0, "state": TaskState.PENDING, "failure_summary": None}
             )
         )
+        # Resetting the task row alone left the campaign sitting at PENDING
+        # forever -- CampaignWorker.run() is what actually processes it, and
+        # nothing dispatched that here (unlike /start and /resume below).
+        # Found live: retrying a BLOCKED EDIT_PLAN task via this route reset
+        # its attempt counter but never advanced the campaign until a
+        # separate /resume call (or an unrelated WorkerJob completion)
+        # happened to invoke the worker.
+        background_tasks.add_task(context.campaign_worker.run, task.campaign_id)
         return RedirectResponse(
             f"/campaigns/{task.campaign_id}", status_code=status.HTTP_303_SEE_OTHER
         )
